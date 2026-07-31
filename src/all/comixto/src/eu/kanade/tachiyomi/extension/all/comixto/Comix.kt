@@ -136,7 +136,7 @@ abstract class Comix :
 
     override fun chapterListRequest(manga: SManga): Request {
         val hid = manga.url
-        return GET("$apiBaseUrl/manga/$hid/chapters?page=1&limit=200", apiHeaders)
+        return GET("$apiBaseUrl/manga/$hid/chapters?page=1&limit=100", apiHeaders)
     }
 
     override fun chapterListParse(response: Response): List<SChapter> {
@@ -146,9 +146,9 @@ abstract class Comix :
             .substringAfter("/manga/")
             .substringBefore("/chapters")
         var page = 1
-        while (data.meta?.hasNext == true && page < 10) {
+        while (data.meta?.hasNext == true && page < 20) {
             page++
-            val nextReq = GET("$apiBaseUrl/manga/$hid/chapters?page=$page&limit=200", apiHeaders)
+            val nextReq = GET("$apiBaseUrl/manga/$hid/chapters?page=$page&limit=100", apiHeaders)
             val nextResp = client.newCall(nextReq).execute()
             val nextData = nextResp.parseAs<ComixChapterListDto>()
             items.addAll(nextData.items)
