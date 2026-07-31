@@ -6,13 +6,13 @@ plugins {
 
 keiyoushi {
     name = "ManhuaRMTL"
-    versionCode = 1
-    contentWarning = ContentWarning.SAFE
+    versionCode = 2
+    contentWarning = ContentWarning.NSFW
     libVersion = "1.4"
     theme = "madara"
 
     source {
-        lang = "all"
+        lang = "en"
         baseUrl = "https://manhuarmtl.com"
     }
 
