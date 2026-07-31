@@ -282,8 +282,7 @@ abstract class ManhuaRMTL :
 
     // ============================== Filters ==============================
 
-    private class ExcludeGenreList(title: String, genres: List<Genre>) :
-        Filter.Group<GenreCheckBox>(title, genres.map { GenreCheckBox(it.name, it.id) })
+    private class ExcludeGenreList(title: String, genres: List<Genre>) : Filter.Group<GenreCheckBox>(title, genres.map { GenreCheckBox(it.name, it.id) })
 
     override fun getFilterList(): FilterList {
         launchIO { fetchGenres() }
