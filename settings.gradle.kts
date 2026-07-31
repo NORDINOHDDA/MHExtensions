@@ -37,6 +37,7 @@ rootProject.name = "Keiyoushi"
 // To add more extensions later, either use loadIndividualExtension("lang", "name") for each,
 // or switch back to loadAllIndividualExtensions() to auto-discover everything under src/.
 loadIndividualExtension("all", "comixto")
+loadIndividualExtension("all", "manhuarmtl")
 // loadAllIndividualExtensions()
 
 /**
