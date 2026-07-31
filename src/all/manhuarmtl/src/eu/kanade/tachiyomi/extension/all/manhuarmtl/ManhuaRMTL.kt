@@ -31,11 +31,9 @@ abstract class ManhuaRMTL : Madara() {
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     // Site uses ?sort= instead of ?m_orderby=
-    override fun popularMangaRequest(page: Int): Request =
-        GET("$baseUrl/$mangaSubString/${searchPage(page)}?sort=trending", headers)
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/$mangaSubString/${searchPage(page)}?sort=trending", headers)
 
-    override fun latestUpdatesRequest(page: Int): Request =
-        GET("$baseUrl/$mangaSubString/${searchPage(page)}?sort=latest", headers)
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/$mangaSubString/${searchPage(page)}?sort=latest", headers)
 
     // Custom genres selector
     override fun genresSelector() = ".mrm-genres__list a"
@@ -66,6 +64,5 @@ abstract class ManhuaRMTL : Madara() {
 
     // Chapter list and page images use standard Madara selectors — no override needed
 
-    override fun imageRequest(page: Page): Request =
-        GET(page.imageUrl!!, headers.newBuilder().set("Referer", baseUrl).build())
+    override fun imageRequest(page: Page): Request = GET(page.imageUrl!!, headers.newBuilder().set("Referer", baseUrl).build())
 }
