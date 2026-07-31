@@ -35,14 +35,14 @@ abstract class ManhuaRMTL : Madara() {
 
     override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/$mangaSubString/${searchPage(page)}?sort=latest", headers)
 
-    // Custom genres selector
-    override fun genresSelector() = ".mrm-genres__list a"
+    // Custom genres selector for manga details page
+    override val mangaDetailsSelectorGenre = ".mrm-genres__list a"
 
     // Manga details — cover from og:image
     override fun mangaDetailsParse(document: Document): SManga = SManga.create().apply {
         title = document.selectFirst("h1")?.text() ?: ""
         description = document.selectFirst("div.description-summary div.summary__content")?.text()
-        genres = document.select(genresSelector()).joinToString(", ") { it.text() }
+        genre = document.select(mangaDetailsSelectorGenre).joinToString(", ") { it.text() }
         thumbnail_url = document.selectFirst("meta[property=og:image]")?.attr("content")
         document.select("div.post-content_item").forEach { item ->
             val label = item.selectFirst("div.summary-heading")?.text() ?: return@forEach
