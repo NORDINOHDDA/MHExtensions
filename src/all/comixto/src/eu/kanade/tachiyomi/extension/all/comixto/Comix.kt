@@ -33,6 +33,9 @@ abstract class Comix :
     private val preferences = getPreferences()
 
     override val client: OkHttpClient = network.client.newBuilder()
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .addInterceptor(::signRequestInterceptor)
         .addInterceptor(::decryptResponseInterceptor)
         .addNetworkInterceptor(::descrambleImageInterceptor)
@@ -133,7 +136,7 @@ abstract class Comix :
 
     override fun chapterListRequest(manga: SManga): Request {
         val hid = manga.url
-        return GET("$apiBaseUrl/manga/$hid/chapters?page=1&limit=100", apiHeaders)
+        return GET("$apiBaseUrl/manga/$hid/chapters?page=1&limit=200", apiHeaders)
     }
 
     override fun chapterListParse(response: Response): List<SChapter> {
@@ -143,9 +146,9 @@ abstract class Comix :
             .substringAfter("/manga/")
             .substringBefore("/chapters")
         var page = 1
-        while (data.meta?.hasNext == true) {
+        while (data.meta?.hasNext == true && page < 10) {
             page++
-            val nextReq = GET("$apiBaseUrl/manga/$hid/chapters?page=$page&limit=100", apiHeaders)
+            val nextReq = GET("$apiBaseUrl/manga/$hid/chapters?page=$page&limit=200", apiHeaders)
             val nextResp = client.newCall(nextReq).execute()
             val nextData = nextResp.parseAs<ComixChapterListDto>()
             items.addAll(nextData.items)
