@@ -90,8 +90,9 @@ abstract class ManhuaRMTL :
     override fun latestUpdatesFromElement(element: Element): SManga = popularMangaFromElement(element)
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
-    // Helper: appends &adult=0 to browse URLs when "Hide NSFW" setting is ON
-    private fun browseUrl(sort: String, page: Int): String = "$baseUrl/$mangaSubString/${searchPage(page)}?sort=$sort".let { if (preferences.hideNsfw()) "$it&adult=0" else it }
+    // Helper: when "Hide NSFW" is ON → adult=0 (hide adult); when OFF → adult= (show all, incl. adult)
+    // Without the adult= param, the site defaults to hiding adult content, so we must send it explicitly.
+    private fun browseUrl(sort: String, page: Int): String = "$baseUrl/$mangaSubString/${searchPage(page)}?sort=$sort&adult=${if (preferences.hideNsfw()) "0" else ""}"
 
     // Site uses ?sort= instead of ?m_orderby=
     override fun popularMangaRequest(page: Int): Request = GET(browseUrl("trending", page), headers)
@@ -317,7 +318,8 @@ abstract class ManhuaRMTL :
 
     override fun pageListParse(response: Response): List<Page> {
         val html = response.body?.string() ?: ""
-        val document = Jsoup.parse(html, response.request.url.toString())
+        val readingPageUrl = response.request.url.toString()
+        val document = Jsoup.parse(html, readingPageUrl)
 
         val pages = pageListParse(document)
 
@@ -328,8 +330,8 @@ abstract class ManhuaRMTL :
             try {
                 val credentials = parseOcrCredentials(html)
                 if (credentials != null) {
-                    val ocrPages = fetchOcrData(credentials)
-                    if (ocrPages != null) {
+                    val ocrPages = fetchOcrData(credentials, readingPageUrl)
+                    if (ocrPages != null && ocrPages.isNotEmpty()) {
                         // Build filename → text boxes map
                         val ocrByFilename = mutableMapOf<String, List<OcrTextBox>>()
                         for (ocrPage in ocrPages) {
@@ -340,7 +342,7 @@ abstract class ManhuaRMTL :
                             }
                         }
 
-                        // Match OCR data to pages by filename
+                        // Match OCR data to pages by filename (also try URL-decoded filename)
                         for (page in pages) {
                             val imageUrl = page.imageUrl ?: continue
                             val filename = imageUrl.substringAfterLast("/").substringBefore("?")
@@ -352,7 +354,7 @@ abstract class ManhuaRMTL :
                     }
                 }
             } catch (_: Exception) {
-                // Fall back to raw images
+                // Fall back to raw images silently
             }
         }
 
@@ -363,6 +365,7 @@ abstract class ManhuaRMTL :
      * Parse OCR credentials from the reading page HTML.
      * The credentials are embedded in an obfuscated JS array like:
      * ["base64cid", "hex64token", timestamp, "hex16nonce", "fetch-ocr-url", "hex32ref"]
+     * The array may be split across multiple lines or have varying whitespace.
      */
     private fun parseOcrCredentials(html: String): OcrCredentials? {
         // Find the fetch-ocr.php URL
@@ -373,40 +376,66 @@ abstract class ManhuaRMTL :
         val cidMatch = Regex("""data-id=["'](\d+)["']""").find(html) ?: return null
         val cid = cidMatch.groupValues[1]
 
-        // Find the credentials array: ["...", "hex64", number, "hex16", "url", "hex32"]
+        // Strategy 1: Find the full credentials array with the fetch-ocr URL in it
+        // Looks for: [..., "hex64", number, "hex16", "...fetch-ocr...", "hex32"]
         val arrayRegex = Regex(
-            """\[\s*"[^"]*"\s*,\s*"([0-9a-f]{64})"\s*,\s*(\d+)\s*,\s*"([0-9a-f]{16})"\s*,\s*"[^"]*fetch-ocr[^"]*"\s*,\s*"([0-9a-f]{32})"\s*\]""",
+            """\[[^\]]*?"([0-9a-f]{64})"\s*,\s*(\d+)\s*,\s*"([0-9a-f]{16})"\s*,\s*"[^"]*fetch-ocr[^"]*"\s*,\s*"([0-9a-f]{32})"[^\]]*?\]""",
+            RegexOption.DOT_MATCHES_ALL,
         )
-        val match = arrayRegex.find(html) ?: return null
+        val match = arrayRegex.find(html)
+        if (match != null) {
+            return OcrCredentials(
+                cid = cid,
+                token = match.groupValues[1],
+                timestamp = match.groupValues[2].toLongOrNull() ?: 0L,
+                nonce = match.groupValues[3],
+                gateUrl = gateUrl,
+                ref = match.groupValues[4],
+            )
+        }
 
-        return OcrCredentials(
-            cid = cid,
-            token = match.groupValues[1],
-            timestamp = match.groupValues[2].toLongOrNull() ?: 0L,
-            nonce = match.groupValues[3],
-            gateUrl = gateUrl,
-            ref = match.groupValues[4],
-        )
+        // Strategy 2: Find individual hex strings near the fetch-ocr URL
+        // Token = 64 hex chars, Nonce = 16 hex chars, Ref = 32 hex chars
+        val tokenMatch = Regex(""""([0-9a-f]{64})"""").find(html)
+        val nonceMatch = Regex(""""([0-9a-f]{16})"""").findAll(html).lastOrNull()
+        val refMatch = Regex(""""([0-9a-f]{32})"""").findAll(html).lastOrNull()
+        val tsMatch = Regex("""\b(1[0-9]{9})\b""").find(html)
+
+        if (tokenMatch != null && nonceMatch != null && refMatch != null) {
+            return OcrCredentials(
+                cid = cid,
+                token = tokenMatch.groupValues[1],
+                timestamp = tsMatch?.groupValues?.get(1)?.toLongOrNull() ?: 0L,
+                nonce = nonceMatch.groupValues[1],
+                gateUrl = gateUrl,
+                ref = refMatch.groupValues[1],
+            )
+        }
+
+        return null
     }
 
     /**
      * Fetch OCR text data from fetch-ocr.php.
+     * Uses the source's default headers (User-Agent) for Cloudflare compatibility.
      * Returns a list of OcrPage (one per image), or null on failure.
      */
-    private fun fetchOcrData(credentials: OcrCredentials): List<OcrPage>? {
+    private fun fetchOcrData(credentials: OcrCredentials, readingPageUrl: String): List<OcrPage>? {
         val jsonBody = """{"cid":"${credentials.cid}","ref":"${credentials.ref}"}"""
         val requestBody = jsonBody.toRequestBody("application/json".toMediaType())
 
+        // Use the source's default headers (includes User-Agent) as a base
         val request = Request.Builder()
             .url(credentials.gateUrl)
             .post(requestBody)
-            .addHeader("Content-Type", "application/json")
-            .addHeader("X-Requested-With", "XMLHttpRequest")
-            .addHeader("X-Gate-Token", credentials.token)
-            .addHeader("X-Gate-Nonce", credentials.nonce)
-            .addHeader("X-Gate-Timestamp", credentials.timestamp.toString())
-            .addHeader("Referer", baseUrl)
-            .addHeader("Origin", baseUrl)
+            .headers(headers)
+            .set("Content-Type", "application/json")
+            .set("X-Requested-With", "XMLHttpRequest")
+            .set("X-Gate-Token", credentials.token)
+            .set("X-Gate-Nonce", credentials.nonce)
+            .set("X-Gate-Timestamp", credentials.timestamp.toString())
+            .set("Referer", readingPageUrl)
+            .set("Origin", baseUrl)
             .build()
 
         return try {
@@ -415,6 +444,11 @@ abstract class ManhuaRMTL :
             response.close()
 
             if (body.isNullOrBlank()) return null
+
+            // Detect Cloudflare challenge page
+            if (body.contains("Just a moment") || body.contains("cf-challenge") || body.contains("cf-mitigated")) {
+                return null
+            }
 
             // Try parsing as bare array first, then as envelope
             try {
@@ -469,6 +503,8 @@ abstract class ManhuaRMTL :
 
     /**
      * Burn English text boxes onto a raw image bitmap.
+     * Draws a semi-transparent black background behind each text box for readability,
+     * then renders white text with a black outline on top.
      * Returns the modified image as WebP bytes, or null on failure.
      */
     private fun overlayText(imageBytes: ByteArray, textBoxes: List<OcrTextBox>): ByteArray? {
@@ -489,10 +525,18 @@ abstract class ManhuaRMTL :
 
             val fontSize = h * 0.65f
 
+            // Draw semi-transparent black background for readability
+            val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(160, 0, 0, 0)
+                style = Paint.Style.FILL
+            }
+            canvas.drawRect(x, y, x + w, y + h, bgPaint)
+
+            // Draw text with outline
             val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.WHITE
                 textSize = fontSize
-                setShadowLayer(fontSize * 0.2f, 2f, 2f, Color.BLACK)
+                setShadowLayer(fontSize * 0.15f, 1f, 1f, Color.BLACK)
             }
 
             // Use StaticLayout for word-wrapping within the box width
