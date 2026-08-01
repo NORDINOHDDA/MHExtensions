@@ -537,21 +537,27 @@ def publish():
     save_index(index)
 
     # ===== Always update repo.json (not just create if missing) =====
-    # Uses "index" field (legacy v1 JSON format) since we generate index.json, not index.pb
+    # Mihon REQUIRES signingKeyFingerprint in repo.json meta — without it,
+    # adding the repo fails with: "Field 'signingKeyFingerprint' is required"
+    if not SIGNING_FINGERPRINT:
+        print("ERROR: SIGNING_FINGERPRINT environment variable is required")
+        print("It should be the SHA-256 fingerprint of your APK signing key.")
+        print("The build job computes it from the keystore via keytool.")
+        sys.exit(1)
+
     repo_json = {
         "index": f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/index.json",
         "index_v2": f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/index.json",
         "meta": {
             "name": "MHExtensions",
             "website": f"https://github.com/{SOURCE_OWNER}/{SOURCE_NAME}",
+            "signingKeyFingerprint": SIGNING_FINGERPRINT,
         },
     }
-    if SIGNING_FINGERPRINT:
-        repo_json["meta"]["signingKeyFingerprint"] = SIGNING_FINGERPRINT
     with open(REPO_JSON_FILE, "w") as f:
         json.dump(repo_json, f, indent=2)
         f.write("\n")
-    print(f"\nUpdated repo.json")
+    print(f"\nUpdated repo.json (fingerprint: {SIGNING_FINGERPRINT[:16]}...)")
 
     # Commit and push
     git("add", "-A", cwd=REPO_DIR)
