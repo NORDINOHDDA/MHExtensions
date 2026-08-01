@@ -131,15 +131,30 @@ def save_index(index):
 
 
 def purge_cdn_cache():
-    """Purge jsDelivr CDN cache for index files (like Keiyoushi does)."""
+    """Purge jsDelivr CDN cache for index files and APKs (like Keiyoushi does)."""
     files_to_purge = [
         f"https://purge.jsdelivr.net/gh/{REPO_OWNER}/{REPO_NAME}@main/index.json",
         f"https://purge.jsdelivr.net/gh/{REPO_OWNER}/{REPO_NAME}@main/repo.json",
     ]
+
+    # Also purge any APK files that exist in the repo
+    apk_dir = REPO_DIR / "apk"
+    if apk_dir.exists():
+        for apk_file in apk_dir.glob("*.apk"):
+            files_to_purge.append(
+                f"https://purge.jsdelivr.net/gh/{REPO_OWNER}/{REPO_NAME}@main/apk/{apk_file.name}"
+            )
+
     for url in files_to_purge:
         try:
-            subprocess.run(["curl", "-s", "-o", "/dev/null", url], timeout=30)
-            print(f"  Purged CDN: {url}")
+            result = subprocess.run(
+                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", url],
+                timeout=30,
+                capture_output=True,
+                text=True,
+            )
+            status = result.stdout.strip()
+            print(f"  Purged CDN ({status}): {url}")
         except Exception:
             print(f"  WARNING: Failed to purge {url}")
 
@@ -465,14 +480,55 @@ def publish():
         print("\nNo extensions were published.")
         return
 
-    # Rebuild info array (preserve order, add new entries at end)
-    existing_pkgs = {e.get("pkg") for e in index.get("info", [])}
+    # ===== Remove orphaned entries (packages no longer in settings.gradle.kts) =====
+    # This handles cases like moving from src/all/ to src/en/ — the old package
+    # (eu.kanade.tachiyomi.extension.all.manhuarmtl) should be removed from the index.
+    valid_packages = get_valid_packages()
+    published_pkgs = set(info_by_pkg.keys())
+    orphaned_entries = [
+        entry for entry in index.get("info", [])
+        if entry.get("pkg") not in valid_packages and entry.get("pkg") not in published_pkgs
+    ]
+
+    if orphaned_entries:
+        print(f"\nFound {len(orphaned_entries)} orphaned extension(s) to remove:")
+        apk_dir = REPO_DIR / "apk"
+        jar_dir = REPO_DIR / "jar"
+        for entry in orphaned_entries:
+            pkg = entry.get("pkg", "?")
+            name = entry.get("name", "?")
+            print(f"  - {name} ({pkg})")
+
+            # Delete APK and JAR files for this orphaned package
+            # The module suffix is derived from the package name: eu.kanade...extension.all.manhuarmtl → all.manhuarmtl
+            module_suffix = ".".join(pkg.split(".")[-2:]) if pkg else ""
+            if module_suffix:
+                for old_apk in apk_dir.glob(f"tachiyomi-{module_suffix}-v*.apk"):
+                    old_apk.unlink()
+                    print(f"    Deleted APK: {old_apk.name}")
+                for old_jar in jar_dir.glob(f"tachiyomi-{module_suffix}-v*.jar"):
+                    old_jar.unlink()
+                    print(f"    Deleted JAR: {old_jar.name}")
+
+    # Rebuild info array:
+    # 1. Keep entries that were just published (updated)
+    # 2. Keep entries that are valid (in settings.gradle.kts) but weren't rebuilt
+    # 3. Drop orphaned entries (not in settings.gradle.kts and not just published)
     new_info = []
     for entry in index.get("info", []):
         pkg = entry.get("pkg")
         if pkg in info_by_pkg:
+            # Updated entry
             new_info.append(info_by_pkg[pkg])
-    # Add new entries
+        elif pkg in valid_packages:
+            # Valid but not rebuilt — keep as-is
+            new_info.append(entry)
+        else:
+            # Orphaned — skip (already deleted files above)
+            pass
+
+    # Add brand-new entries (not previously in index)
+    existing_pkgs = {e.get("pkg") for e in index.get("info", [])}
     for pkg, entry in info_by_pkg.items():
         if pkg not in existing_pkgs:
             new_info.append(entry)
@@ -480,21 +536,22 @@ def publish():
     index["info"] = new_info
     save_index(index)
 
-    # Ensure repo.json exists (static pointer for Mihon)
-    if not REPO_JSON_FILE.exists():
-        repo_json = {
-            "index_v2": f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/index.json",
-            "meta": {
-                "name": "MHExtensions",
-                "website": f"https://github.com/{SOURCE_OWNER}/{SOURCE_NAME}",
-            },
-        }
-        if SIGNING_FINGERPRINT:
-            repo_json["meta"]["signingKeyFingerprint"] = SIGNING_FINGERPRINT
-        with open(REPO_JSON_FILE, "w") as f:
-            json.dump(repo_json, f, indent=2)
-            f.write("\n")
-        print(f"\nCreated repo.json")
+    # ===== Always update repo.json (not just create if missing) =====
+    # Uses "index" field (legacy v1 JSON format) since we generate index.json, not index.pb
+    repo_json = {
+        "index": f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/index.json",
+        "index_v2": f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/index.json",
+        "meta": {
+            "name": "MHExtensions",
+            "website": f"https://github.com/{SOURCE_OWNER}/{SOURCE_NAME}",
+        },
+    }
+    if SIGNING_FINGERPRINT:
+        repo_json["meta"]["signingKeyFingerprint"] = SIGNING_FINGERPRINT
+    with open(REPO_JSON_FILE, "w") as f:
+        json.dump(repo_json, f, indent=2)
+        f.write("\n")
+    print(f"\nUpdated repo.json")
 
     # Commit and push
     git("add", "-A", cwd=REPO_DIR)
