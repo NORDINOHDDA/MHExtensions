@@ -1,163 +1,117 @@
-# Comix.to Extension (Mihon/Tachiyomi)
+# MHExtensions
 
-A [Mihon](https://mihon.app)/Tachiyomi extension for reading manga, manhwa, and manhua from **[comix.to](https://comix.to)**.
+Tachiyomi/Mihon extension repository for personal use, based on the [Keiyoushi](https://github.com/keiyoushi/extensions-source) build infrastructure.
 
-Built on the [keiyoushi/extensions-source](https://github.com/keiyoushi/extensions-source) build infrastructure, stripped down to a single extension with full API reverse-engineering.
+## Extensions
 
----
+| Extension | Language | Site | Status |
+|-----------|----------|------|--------|
+| **Comix** | All | [comix.to](https://comix.to) | Working |
+| **ManhuaRMTL** | English | [manhuarmtl.com](https://manhuarmtl.com) | Working (with OCR text overlay) |
+
+## Repository URL for Mihon
+
+To use this repo in Mihon, add:
+
+```
+https://raw.githubusercontent.com/marbou92/MHRepo/main/repo.json
+```
 
 ## Features
 
-- **Browse** — Popular (most followed), Latest (recently updated)
-- **Search** — By title with advanced filters
-- **Filters** — Type (Manga/Manhwa/Manhua/Other), Status, Demographic, 31 Genres, Year range, Min chapters, 11 sort options
-- **Manga details** — Author, artist, genres, tags, status, score, alternative names
-- **Chapter list** — Full pagination (handles 700+ chapter manga), deduplication (official > votes > recency), scanlator filter
-- **Reader** — Full image loading with proper headers
-- **Settings** — 10 configurable options (content rating defaults, blocked genres, deduplication, score display, etc.)
+### Comix (`src/all/comixto/`)
+- Reverse-engineered API with request signing and response decryption
+- Image descrambling for tile-scrambled pages
+- 10 extension settings (content rating, deduplication, score display, etc.)
+- Comix-style description format with stars and bold info line
 
-### Settings
+### ManhuaRMTL (`src/en/manhuarmtl/`)
+- Madara-based theme with custom MRM selectors
+- **OCR text overlay** — burns English MTL text onto raw images (the site serves raw images; English is a JS overlay fetched from `fetch-ocr.php`)
+- Toggle between English (MTL overlay) and Raw images in settings
+- NSFW content filter (hide/show adult content)
+- Comix-style description format with stars and bold info line
+- Custom filters: genres (include/exclude), status, sort, author, artist, release year
 
-| Setting | Description |
-|---------|-------------|
-| Default content rating | Safe, Suggestive, Erotica, Pornographic |
-| Default type filter | Manga, Manhwa, Manhua, Other |
-| Default demographic filter | Shounen, Seinen, Shoujo, Josei |
-| Blocked genres | Hide specific genres from chips |
-| Deduplicate chapters | Keep best version per chapter (official > votes) |
-| Scanlator filter | Show only chapters from specific scanlators |
-| Show alternative names | Display alt titles in description |
-| Show extra info | Type, status, year, rating, latest chapter |
-| Show tags in genre chips | Include format tags (Long Strip, Full Color, etc.) |
-| Score display position | Don't show / Top of description / End of description |
-
----
-
-## Installation
-
-### Add the repo to Mihon
-
-1. Open Mihon
-2. Go to **More → Settings → Browse → Extension repos → Add**
-3. Paste:
-   ```
-   https://raw.githubusercontent.com/marbou92/MHRepo/main/index.min.json
-   ```
-4. Restart Mihon
-5. Go to **Browse → Extensions** and install **Comix**
-
-### Manual install (APK sideload)
-
-Download the latest APK from the [Actions tab](https://github.com/marbou92/MHExtensions/actions) → click a successful CI run → Artifacts.
-
----
-
-## How It Works
-
-Comix.to uses a custom API protection layer that was reverse-engineered:
-
-1. **Request signing** — Every API request needs a `_` query parameter: a base64url signature computed via a 3-stage chained S-box substitution over the request path + sorted query string.
-
-2. **Response encryption** — Chapter list and chapter page responses are encrypted (`x-enc: 1` header). The body is `{"e": "<base64url>"}` and decryption reverses the S-box using inverse lookup tables.
-
-3. **API envelope** — All responses are wrapped in `{"status":"ok","result":...}` which is unwrapped by an OkHttp interceptor.
-
-Both the sign and decrypt functions are implemented natively in Kotlin — no WebView or JS engine needed.
-
-### API Endpoints
-
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /api/v1/manga?params` | Manga list (popular / latest / search) |
-| `GET /api/v1/manga/{hid}` | Manga details |
-| `GET /api/v1/manga/{hid}/chapters` | Chapter list (paginated) |
-| `GET /api/v1/chapters/{chapterId}` | Chapter pages (image URLs) |
-
----
-
-## Repository Structure
-
-This repo (`MHExtensions`) contains the **source code**. The **published extension repo** is at [marbou92/MHRepo](https://github.com/marbou92/MHRepo).
-
-```
-MHExtensions/
-├── src/all/comix/                    # The Comix extension
-│   ├── build.gradle.kts
-│   ├── res/mipmap-*/ic_launcher.png  # Extension icon (5 densities)
-│   └── src/eu/kanade/tachiyomi/extension/all/comix/
-│       ├── Comix.kt                  # Main HttpSource + sign/decrypt + settings
-│       └── ComixDto.kt               # kotlinx.serialization DTOs
-├── core/                             # Gradle plugin / DSL
-├── common/                           # Shared runtime utilities
-├── compiler/                         # @Source annotation processor
-├── lib/                              # Reusable helpers
-├── lib-multisrc/                     # 61 multisrc themes
-├── .github/
-│   ├── workflows/
-│   │   ├── build_push.yml            # Auto debug builds on push
-│   │   ├── build_pull_request.yml    # PR checks
-│   │   └── release_publish.yml       # Manual release + publish to MHRepo
-│   └── scripts/
-│       └── publish-repo.py           # Generates index.min.json
-├── setup-signing.sh                  # Signing key generator
-├── ext-bootstrap.py                  # Extension scaffolder
-└── SIGNING.md                        # Signing setup guide
-```
-
----
-
-## Building
+## Build & Publish
 
 ### Prerequisites
 
-- JDK 17
-- Android SDK (with build-tools)
-- Internet access (Gradle downloads dependencies on first build)
+1. **GitHub Secrets** (in this repo's Settings → Secrets and variables → Actions):
+   - `SIGNING_KEY` — base64-encoded `.jks` keystore file
+   - `KEY_STORE_PASSWORD` — keystore password
+   - `ALIAS` — key alias name
+   - `KEY_PASSWORD` — key password
+   - `REPO_PAT` — GitHub PAT with write access to `marbou92/MHRepo`
+   - `SIGNING_FINGERPRINT_MANUAL` — SHA-256 fingerprint of your signing key (for cleanup mode)
 
-### Build debug APK
+2. **To get the signing fingerprint:**
+   ```bash
+   keytool -list -v \
+     -keystore signingkey.jks \
+     -storepass "YOUR_KEYSTORE_PASSWORD" \
+     -alias "YOUR_ALIAS" \
+     -keypass "YOUR_KEY_PASSWORD" \
+     | grep "SHA256:"
+   ```
 
-```bash
-./gradlew :src:all:comix:assembleDebug
+### Publishing extensions
+
+1. Make your changes to the extension source code
+2. Bump `versionCode` in the extension's `build.gradle.kts`
+3. Commit and push to `main`
+4. Go to **Actions → Release & Publish → Run workflow**
+5. Select `publish` mode and run
+
+The workflow will:
+- Build signed release APKs for all extensions in `settings.gradle.kts`
+- Compute the signing key fingerprint
+- Publish APKs, JARs, icons, and protobuf index (`index.pb`) to [MHRepo](https://github.com/marbou92/MHRepo)
+- Purge the jsDelivr CDN cache
+
+### Cleaning up orphaned extensions
+
+If you rename or move an extension (e.g., from `src/all/` to `src/en/`), the old entry stays in MHRepo's index. To clean up:
+
+1. Go to **Actions → Release & Publish → Run workflow**
+2. Select `cleanup-dry-run` mode first to preview what will be deleted
+3. If correct, run again with `cleanup` mode to actually delete
+
+## Project structure
+
+```
+MHExtensions/
+├── .github/
+│   ├── scripts/
+│   │   ├── publish-repo.py      # Publish & cleanup script (protobuf-based)
+│   │   ├── index.proto          # Protobuf schema for Mihon v2 index
+│   │   └── index.min.json       # Static legacy marker file
+│   └── workflows/
+│       └── release_publish.yml  # Build + publish + cleanup workflow
+├── core/                        # Shared library code
+├── compiler/                    # KSP annotation processor
+├── lib/                         # Shared libraries (cryptoaes, i18n)
+├── lib-multisrc/                # Multisrc themes (madara, etc.)
+├── src/
+│   ├── all/comixto/             # Comix extension
+│   └── en/manhuarmtl/           # ManhuaRMTL extension
+├── settings.gradle.kts          # Extension loading config
+└── gradlew                      # Gradle wrapper
 ```
 
-Output: `src/all/comix/build/outputs/apk/debug/*.apk`
+## Adding a new extension
 
-### Build release APK (signed)
+1. Create `src/<lang>/<name>/` with the extension source
+2. Add `loadIndividualExtension("<lang>", "<name>")` to `settings.gradle.kts`
+3. Add the icon at `src/<lang>/<name>/res/mipmap-xhdpi/ic_launcher.png`
+4. Commit, push, and run the publish workflow
 
-```bash
-./gradlew :src:all:comix:assembleRelease \
-  -PALIAS=<alias> \
-  -PKEY_STORE_PASSWORD=<password> \
-  -PKEY_PASSWORD=<password>
-```
+## Credits
 
-Output: `src/all/comix/build/outputs/apk/release/*.apk`
-
----
-
-## CI Workflows
-
-| Workflow | Trigger | Purpose |
-|----------|---------|---------|
-| **CI** (`build_push.yml`) | Auto on push to `main` | Builds debug APK for testing |
-| **PR check** (`build_pull_request.yml`) | Auto on PR | Builds debug to verify PRs |
-| **Release & Publish** (`release_publish.yml`) | Manual only | Builds signed release APKs + publishes to [MHRepo](https://github.com/marbou92/MHRepo) |
-
-### Release process
-
-1. Test with debug build (auto-built on push)
-2. Go to **Actions → Release & Publish → Run workflow**
-3. CI builds signed release APKs
-4. CI publishes to `MHRepo` (generates `index.min.json`, uploads APKs + icons)
-5. Mihon auto-updates the extension
-
----
+- Build infrastructure: [Keiyoushi/extensions-source](https://github.com/keiyoushi/extensions-source)
+- Multisrc themes: [Keiyoushi](https://github.com/keiyoushi)
+- App: [Mihon](https://github.com/mihonapp/mihon)
 
 ## License
 
-Apache License 2.0
-
-## Disclaimer
-
-This project does not have any affiliation with comix.to or the content providers available.
-This project is not affiliated with Mihon/Tachiyomi. All credits to the codebase go to the original keiyoushi contributors.
+See [LICENSE](LICENSE).
