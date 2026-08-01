@@ -364,14 +364,21 @@ def publish():
         with open(info_file) as f:
             meta = json.load(f)
 
-        pkg = meta["packageName"]
-        name = meta["name"]
-        code = meta["versionCode"]
-        version = meta["versionName"]
-        module = meta["module"]
+        # Use .get() with fallbacks for all fields — the build-logic may not
+        # emit all fields (e.g., "module" might be missing in some forks)
+        pkg = meta.get("packageName") or meta.get("pkg") or ""
+        if not pkg:
+            print(f"\n  WARNING: No packageName in {info_file}, skipping")
+            continue
+
+        name = meta.get("name") or pkg.split(".")[-1]
+        code = meta.get("versionCode") or meta.get("code") or 0
+        version = meta.get("versionName") or meta.get("version") or str(code)
+        # module: derive from packageName if not in JSON (e.g., "eu.kanade...extension.en.manhuarmtl" → "en.manhuarmtl")
+        module = meta.get("module") or ".".join(pkg.split(".")[-2:])
         theme = meta.get("theme")
         sources = meta.get("sources", [])
-        content_warning = meta.get("contentWarning", 1)
+        content_warning = meta.get("contentWarning", meta.get("nsfw", 1))
 
         # Find the APK
         apk_path = find_apk_for_info(info_file)
@@ -410,7 +417,7 @@ def publish():
             "name": name,
             "pkg": pkg,
             "apk": f"{APK_BASE_URL}/{apk_filename}",
-            "lang": sources[0]["lang"] if sources else "all",
+            "lang": sources[0].get("lang", "all") if sources else "all",
             "code": code,
             "version": version,
             "nsfw": content_warning_to_nsfw(content_warning),
@@ -419,10 +426,10 @@ def publish():
             "hasChangelog": False,
             "sources": [
                 {
-                    "name": s["name"],
-                    "lang": s["lang"],
-                    "id": s["id"],
-                    "baseUrl": s["baseUrl"],
+                    "name": s.get("name", ""),
+                    "lang": s.get("lang", "all"),
+                    "id": s.get("id", 0),
+                    "baseUrl": s.get("baseUrl", ""),
                 }
                 for s in sources
             ],
