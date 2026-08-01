@@ -90,9 +90,18 @@ abstract class ManhuaRMTL :
     override fun latestUpdatesFromElement(element: Element): SManga = popularMangaFromElement(element)
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
-    // Helper: when "Hide NSFW" is ON → adult=0 (hide adult); when OFF → adult= (show all, incl. adult)
-    // Without the adult= param, the site defaults to hiding adult content, so we must send it explicitly.
-    private fun browseUrl(sort: String, page: Int): String = "$baseUrl/$mangaSubString/${searchPage(page)}?sort=$sort&adult=${if (preferences.hideNsfw()) "0" else ""}"
+    // Browse page (/manga/) does NOT support the adult= parameter (only search does).
+    // The site defaults to hiding adult content on browse, which is fine for "Hide NSFW" mode.
+    // When "Hide NSFW" is OFF, we use the search endpoint with adult= to show all content.
+    private fun browseUrl(sort: String, page: Int): String =
+        if (preferences.hideNsfw()) {
+            // Hide NSFW: use browse page (site default already hides adult)
+            "$baseUrl/$mangaSubString/${searchPage(page)}?sort=$sort"
+        } else {
+            // Show all: use search endpoint with adult= (browse page can't show adult)
+            val pg = if (page > 1) "&pg=$page" else ""
+            "$baseUrl/?post_type=wp-manga&s=&sort=$sort&adult=$pg"
+        }
 
     // Site uses ?sort= instead of ?m_orderby=
     override fun popularMangaRequest(page: Int): Request = GET(browseUrl("trending", page), headers)
@@ -105,9 +114,22 @@ abstract class ManhuaRMTL :
 
     // Search uses the root endpoint with &pg=N pagination (NOT path-based /page/N/)
     override fun searchRequest(page: Int, query: String, filters: FilterList): Request {
+        // Check if user explicitly selected an Adult content filter
+        val adultFilter = filters.filterIsInstance<AdultContentFilter>().firstOrNull()
+        // Determine the adult param value:
+        // - hideNsfw=ON → always "0" (hide adult, overrides filter)
+        // - hideNsfw=OFF + filter selected → use filter value
+        // - hideNsfw=OFF + no filter → "" (show all, including adult)
+        val adultValue = when {
+            preferences.hideNsfw() -> "0"
+            adultFilter != null -> adultFilter.toUriPart()
+            else -> ""
+        }
+
         val url = "$baseUrl/".toHttpUrl().newBuilder().apply {
             addQueryParameter("post_type", "wp-manga")
             addQueryParameter("s", query)
+            addQueryParameter("adult", adultValue)
             if (page > 1) addQueryParameter("pg", page.toString())
 
             filters.forEach { filter ->
@@ -117,7 +139,6 @@ abstract class ManhuaRMTL :
                     is YearFilter -> if (filter.state.isNotBlank()) addQueryParameter("release", filter.state)
                     is StatusFilter -> filter.state.forEach { if (it.state) addQueryParameter("status[]", it.id) }
                     is OrderByFilter -> if (filter.toUriPart().isNotBlank()) addQueryParameter("sort", filter.toUriPart())
-                    is AdultContentFilter -> addQueryParameter("adult", if (preferences.hideNsfw()) "0" else filter.toUriPart())
                     is GenreConditionFilter -> addQueryParameter("op", filter.toUriPart())
                     is GenreList -> filter.state.filter { it.state }.forEach { addQueryParameter("genre[]", it.id) }
                     is ExcludeGenreList -> filter.state.filter { it.state }.forEach { addQueryParameter("exclude_genre[]", it.id) }
