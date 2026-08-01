@@ -42,11 +42,11 @@ jobs:
       # ============================================================================
       # PUBLISH MODE — build APKs and push to MHRepo
       # ============================================================================
-      - name: Build extensions
+      - name: Build debug (CI compile test)
         if: inputs.mode == 'publish'
         run: ./gradlew assembleDebug
 
-      - name: Prepare signing key and build signed release APKs
+      - name: Build signed release APKs
         if: inputs.mode == 'publish'
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
@@ -55,8 +55,8 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           if [ -z "$SIGNING_KEY" ]; then
-            echo "No signing key found — skipping signed release build"
-            exit 0
+            echo "::error::SIGNING_KEY secret is required to publish release APKs"
+            exit 1
           fi
           echo "$SIGNING_KEY" | base64 -d > /tmp/keystore.jks
           export KEYSTORE_FILE=/tmp/keystore.jks
