@@ -57,8 +57,9 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           # Extract all extension modules from settings.gradle.kts
-          # loadIndividualExtension("lang", "name") → :src:lang:name:assembleRelease
-          MODULES=$(grep -oP 'loadIndividualExtension\("\K[^"]+", "[^"]+' settings.gradle.kts \
+          # Skip comment lines, then parse: loadIndividualExtension("lang", "name")
+          MODULES=$(grep -v '^\s*//' settings.gradle.kts \
+            | grep -oP 'loadIndividualExtension\("\K[^"]+", "[^"]+' \
             | sed 's/", "/:/g' \
             | sed 's/^/:src:/; s/$/:assembleRelease/' \
             | tr '\n' ' ')
