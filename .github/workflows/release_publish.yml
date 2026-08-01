@@ -43,21 +43,21 @@ jobs:
         if: inputs.mode == 'publish'
         run: ./gradlew assembleDebug
 
-      - name: Prepare signing key
+      - name: Prepare signing key and build signed release APKs
         if: inputs.mode == 'publish'
-        run: |
-          if [ -n "${{ secrets.SIGNING_KEY }}" ]; then
-            echo "${{ secrets.SIGNING_KEY }}" | base64 -d > /tmp/keystore.jks
-          fi
-
-      - name: Build signed release APKs
-        if: inputs.mode == 'publish' && secrets.SIGNING_KEY != ''
         env:
-          KEYSTORE_FILE: /tmp/keystore.jks
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew assembleRelease
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "No signing key found — skipping signed release build"
+            exit 0
+          fi
+          echo "$SIGNING_KEY" | base64 -d > /tmp/keystore.jks
+          export KEYSTORE_FILE=/tmp/keystore.jks
+          ./gradlew assembleRelease
 
       - name: Publish to MHRepo
         if: inputs.mode == 'publish'
