@@ -13,73 +13,123 @@ on:
           - cleanup
           - cleanup-dry-run
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions: {}
+
 jobs:
-  build-and-publish:
+  build:
+    name: Build release APKs
     runs-on: ubuntu-latest
+    if: inputs.mode == 'publish'
     steps:
       - name: Checkout MHExtensions
         uses: actions/checkout@v4
 
       - name: Set up JDK
-        if: inputs.mode == 'publish'
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
       - name: Setup Gradle
-        if: inputs.mode == 'publish'
         uses: gradle/actions/setup-gradle@v4
-
-      - name: Configure Git
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Ensure gradlew is executable
         run: chmod +x ./gradlew
 
-      # ============================================================================
-      # PUBLISH MODE — build APKs and push to MHRepo
-      # ============================================================================
-      - name: Build debug (CI compile test)
-        if: inputs.mode == 'publish'
-        run: ./gradlew assembleDebug
-
-      - name: Build signed release APKs
-        if: inputs.mode == 'publish'
+      - name: Prepare signing key
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           if [ -z "$SIGNING_KEY" ]; then
             echo "::error::SIGNING_KEY secret is required to publish release APKs"
             exit 1
           fi
-          echo "$SIGNING_KEY" | base64 -d > /tmp/keystore.jks
-          export KEYSTORE_FILE=/tmp/keystore.jks
-          ./gradlew assembleRelease
+          echo "$SIGNING_KEY" | base64 -d > signingkey.jks
+
+      - name: Build all extensions (release)
+        env:
+          ALIAS: ${{ secrets.ALIAS }}
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # Extract all extension modules from settings.gradle.kts
+          # loadIndividualExtension("lang", "name") → :src:lang:name:assembleRelease
+          MODULES=$(grep -oP 'loadIndividualExtension\("\K[^"]+", "[^"]+' settings.gradle.kts \
+            | sed 's/", "/:/g' \
+            | sed 's/^/:src:/; s/$/:assembleRelease/' \
+            | tr '\n' ' ')
+          echo "Building: $MODULES"
+          ./gradlew $MODULES
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-apks
+          path: |
+            **/build/outputs/apk/release/*.apk
+            **/build/outputs/jar/release/*.jar
+            **/build/keiyoushi-source-info.json
+          retention-days: 1
+
+      - name: Clean up signing key
+        if: always()
+        run: rm -f signingkey.jks
+
+  publish:
+    name: Publish to MHRepo
+    runs-on: ubuntu-latest
+    needs: build
+    if: always() && needs.build.result == 'success'
+    steps:
+      - name: Checkout MHExtensions (for scripts + settings.gradle.kts + icons)
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-apks
+          path: artifacts
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Publish to MHRepo
-        if: inputs.mode == 'publish'
         env:
           REPO_PAT: ${{ secrets.REPO_PAT }}
           REPO_OWNER: marbou92
           REPO_NAME: MHRepo
+          SOURCE_OWNER: marbou92
+          SOURCE_NAME: MHExtensions
           GITHUB_WORKSPACE: ${{ github.workspace }}
         run: python .github/scripts/publish-repo.py
 
-      # ============================================================================
-      # CLEANUP MODE — remove orphaned extensions from MHRepo
-      # ============================================================================
+  cleanup:
+    name: Cleanup orphaned extensions
+    runs-on: ubuntu-latest
+    if: inputs.mode == 'cleanup' || inputs.mode == 'cleanup-dry-run'
+    steps:
+      - name: Checkout MHExtensions (for settings.gradle.kts)
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Cleanup orphaned extensions (dry run)
         if: inputs.mode == 'cleanup-dry-run'
         env:
           REPO_PAT: ${{ secrets.REPO_PAT }}
           REPO_OWNER: marbou92
           REPO_NAME: MHRepo
+          SOURCE_OWNER: marbou92
+          SOURCE_NAME: MHExtensions
           GITHUB_WORKSPACE: ${{ github.workspace }}
         run: python .github/scripts/publish-repo.py --cleanup --dry
 
@@ -89,5 +139,7 @@ jobs:
           REPO_PAT: ${{ secrets.REPO_PAT }}
           REPO_OWNER: marbou92
           REPO_NAME: MHRepo
+          SOURCE_OWNER: marbou92
+          SOURCE_NAME: MHExtensions
           GITHUB_WORKSPACE: ${{ github.workspace }}
         run: python .github/scripts/publish-repo.py --cleanup
