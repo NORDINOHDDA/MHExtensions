@@ -424,18 +424,19 @@ abstract class ManhuaRMTL :
         val jsonBody = """{"cid":"${credentials.cid}","ref":"${credentials.ref}"}"""
         val requestBody = jsonBody.toRequestBody("application/json".toMediaType())
 
-        // Use the source's default headers (includes User-Agent) as a base
+        // Use the source's default headers (includes User-Agent) as a base,
+        // then override with OCR-specific headers (header() overwrites, addHeader() appends)
         val request = Request.Builder()
             .url(credentials.gateUrl)
             .post(requestBody)
             .headers(headers)
-            .set("Content-Type", "application/json")
-            .set("X-Requested-With", "XMLHttpRequest")
-            .set("X-Gate-Token", credentials.token)
-            .set("X-Gate-Nonce", credentials.nonce)
-            .set("X-Gate-Timestamp", credentials.timestamp.toString())
-            .set("Referer", readingPageUrl)
-            .set("Origin", baseUrl)
+            .header("Content-Type", "application/json")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("X-Gate-Token", credentials.token)
+            .header("X-Gate-Nonce", credentials.nonce)
+            .header("X-Gate-Timestamp", credentials.timestamp.toString())
+            .header("Referer", readingPageUrl)
+            .header("Origin", baseUrl)
             .build()
 
         return try {
