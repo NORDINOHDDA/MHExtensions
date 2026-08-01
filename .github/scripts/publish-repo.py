@@ -105,11 +105,14 @@ def get_valid_packages():
 
 
 def clone_repo():
-    """Clone or pull the MHRepo repository."""
+    """Clone or pull the MHRepo repository and configure git identity for commits."""
     if REPO_DIR.exists():
         shutil.rmtree(REPO_DIR)
     print(f"Cloning {REPO_OWNER}/{REPO_NAME}...")
     run(f"git clone --depth 1 {REPO_URL} {REPO_DIR}")
+    # Configure git identity for commits (needed in CI where no global config exists)
+    git("config", "user.name", "github-actions[bot]", cwd=REPO_DIR)
+    git("config", "user.email", "github-actions[bot]@users.noreply.github.com", cwd=REPO_DIR)
 
 
 def load_index():
