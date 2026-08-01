@@ -1,4 +1,4 @@
-package eu.kanade.tachiyomi.extension.all.manhuarmtl
+package eu.kanade.tachiyomi.extension.en.manhuarmtl
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
 import eu.kanade.tachiyomi.network.GET
@@ -13,6 +13,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import kotlin.math.roundToInt
 
 @Source
 abstract class ManhuaRMTL :
@@ -64,10 +65,13 @@ abstract class ManhuaRMTL :
     override fun latestUpdatesFromElement(element: Element): SManga = popularMangaFromElement(element)
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
-    // Site uses ?sort= instead of ?m_orderby=
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/$mangaSubString/${searchPage(page)}?sort=trending", headers)
+    // Helper: appends &adult=0 to browse URLs when "Hide NSFW" setting is ON
+    private fun browseUrl(sort: String, page: Int): String = "$baseUrl/$mangaSubString/${searchPage(page)}?sort=$sort".let { if (preferences.hideNsfw()) "$it&adult=0" else it }
 
-    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/$mangaSubString/${searchPage(page)}?sort=latest", headers)
+    // Site uses ?sort= instead of ?m_orderby=
+    override fun popularMangaRequest(page: Int): Request = GET(browseUrl("trending", page), headers)
+
+    override fun latestUpdatesRequest(page: Int): Request = GET(browseUrl("latest", page), headers)
 
     override fun popularMangaNextPageSelector(): String? = "a.next.page-numbers, a.mrm-pager__btn[rel=next]"
 
@@ -87,7 +91,7 @@ abstract class ManhuaRMTL :
                     is YearFilter -> if (filter.state.isNotBlank()) addQueryParameter("release", filter.state)
                     is StatusFilter -> filter.state.forEach { if (it.state) addQueryParameter("status[]", it.id) }
                     is OrderByFilter -> if (filter.toUriPart().isNotBlank()) addQueryParameter("sort", filter.toUriPart())
-                    is AdultContentFilter -> addQueryParameter("adult", filter.toUriPart())
+                    is AdultContentFilter -> addQueryParameter("adult", if (preferences.hideNsfw()) "0" else filter.toUriPart())
                     is GenreConditionFilter -> addQueryParameter("op", filter.toUriPart())
                     is GenreList -> filter.state.filter { it.state }.forEach { addQueryParameter("genre[]", it.id) }
                     is ExcludeGenreList -> filter.state.filter { it.state }.forEach { addQueryParameter("exclude_genre[]", it.id) }
@@ -159,8 +163,14 @@ abstract class ManhuaRMTL :
                 }
             }
 
-            // Genres
+            // Extract type early — used for both genre chips and info line
+            val type = selectFirst(seriesTypeSelector)?.ownText()?.takeIf { it.isNotBlank() && it.notUpdating() }
+
+            // Genres (optionally include type: Manhwa/Manhua/Manga)
             val genreList = select(mangaDetailsSelectorGenre).mapTo(ArrayList()) { it.text() }
+            if (preferences.showTypeInGenre() && type != null) {
+                genreList.add(type)
+            }
             manga.genre = genreList.distinctBy(String::lowercase).joinToString().ifBlank { null }
 
             // ===== Build comix-style description =====
@@ -171,7 +181,7 @@ abstract class ManhuaRMTL :
             // Alt names
             val altNames = selectFirst(altNameSelector)?.ownText()?.takeIf { it.isNotBlank() && it.notUpdating() }
 
-            // Rating / votes from MRM facts
+            // Rating / votes from MRM facts — site uses a 0-5 scale (NOT 0-10 like comix)
             val ratingText = selectFirst("li.mrm-facts__item--rating strong")?.text()
             val ratingScore = ratingText?.toFloatOrNull()
             val votesText = selectFirst("li.mrm-facts__item--rating .mrm-facts__sub")?.text()
@@ -180,14 +190,14 @@ abstract class ManhuaRMTL :
 
             val stars = if (hasScore) {
                 val score = ratingScore!!
-                val fullStars = (score / 2).toInt().coerceIn(0, 5)
+                // Site uses 0-5 scale: round to nearest int (5.0 → 5 stars, 4.4 → 4, 4.8 → 5)
+                val fullStars = score.roundToInt().coerceIn(0, 5)
                 "★".repeat(fullStars) + "☆".repeat(5 - fullStars) + " $score"
             } else {
                 null
             }
 
             // Type / chapters / views / release year
-            val type = selectFirst(seriesTypeSelector)?.ownText()?.takeIf { it.isNotBlank() && it.notUpdating() }
             val chaptersText = selectFirst(".post-content_item:contains(Chapters) .summary-content")?.text()
             val chaptersNum = chaptersText?.filter { it.isDigit() }?.toIntOrNull()
             val releaseYear = selectFirst(".post-content_item:contains(Release) .summary-content a")?.text()
@@ -338,6 +348,14 @@ abstract class ManhuaRMTL :
     // ============================== Settings ==============================
 
     override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
+        // Hide NSFW content globally
+        androidx.preference.SwitchPreferenceCompat(screen.context).apply {
+            key = PREF_HIDE_NSFW
+            title = "Hide NSFW content"
+            summary = "Hide adult content from browse and search (overrides the Adult content filter)"
+            setDefaultValue(false)
+        }.let(screen::addPreference)
+
         // Show alt names
         androidx.preference.SwitchPreferenceCompat(screen.context).apply {
             key = PREF_SHOW_ALT_NAMES
@@ -354,6 +372,14 @@ abstract class ManhuaRMTL :
             setDefaultValue(true)
         }.let(screen::addPreference)
 
+        // Show type in genre chips
+        androidx.preference.SwitchPreferenceCompat(screen.context).apply {
+            key = PREF_SHOW_TYPE_IN_GENRE
+            title = "Show type in genre chips"
+            summary = "Include Manhwa/Manhua/Manga in the genre field"
+            setDefaultValue(true)
+        }.let(screen::addPreference)
+
         // Score display position
         androidx.preference.ListPreference(screen.context).apply {
             key = PREF_SCORE_POSITION
@@ -365,13 +391,17 @@ abstract class ManhuaRMTL :
         }.let(screen::addPreference)
     }
 
+    private fun android.content.SharedPreferences.hideNsfw(): Boolean = getBoolean(PREF_HIDE_NSFW, false)
     private fun android.content.SharedPreferences.showAltNames(): Boolean = getBoolean(PREF_SHOW_ALT_NAMES, true)
     private fun android.content.SharedPreferences.showExtraInfo(): Boolean = getBoolean(PREF_SHOW_EXTRA_INFO, true)
+    private fun android.content.SharedPreferences.showTypeInGenre(): Boolean = getBoolean(PREF_SHOW_TYPE_IN_GENRE, true)
     private fun android.content.SharedPreferences.getScorePosition(): String = getString(PREF_SCORE_POSITION, "end") ?: "end"
 
     companion object {
+        private const val PREF_HIDE_NSFW = "pref_hide_nsfw"
         private const val PREF_SHOW_ALT_NAMES = "pref_show_alt_names"
         private const val PREF_SHOW_EXTRA_INFO = "pref_show_extra_info"
+        private const val PREF_SHOW_TYPE_IN_GENRE = "pref_show_type_in_genre"
         private const val PREF_SCORE_POSITION = "pref_score_position"
     }
 }
