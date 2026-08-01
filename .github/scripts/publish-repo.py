@@ -63,6 +63,17 @@ ICON_FILE = "res/mipmap-xhdpi/ic_launcher.png"
 # Helpers
 # =============================================================================
 
+def normalize_fingerprint(fp):
+    """
+    Normalize a signing key fingerprint to lowercase hex without colons.
+    keytool outputs: B6:E6:21:B4:0A:C6:...
+    Mihon expects:   b6e621b40ac65e14...
+    """
+    if not fp:
+        return ""
+    return fp.replace(":", "").replace(" ", "").lower()
+
+
 def run(cmd, **kwargs):
     """Run a shell command, exit on failure."""
     result = subprocess.run(cmd, shell=True, **kwargs)
@@ -216,9 +227,9 @@ def cleanup(dry_run=False):
     # Rebuild and write index
     kept.sort(key=lambda e: e.packageName)
     new_index = index_pb2.Index(
-        name="MHExtensions",
-        badgeLabel="MHE",
-        signingKey=SIGNING_FINGERPRINT,
+        name="MarBou",
+        badgeLabel="marbou92",
+        signingKey=normalize_fingerprint(SIGNING_FINGERPRINT),
         contact=index_pb2.Contact(
             website=f"https://github.com/{SOURCE_OWNER}/{SOURCE_NAME}",
         ),
@@ -460,9 +471,9 @@ def publish():
 
     # Build the Index proto (with badgeLabel and contact — required by Mihon)
     index = index_pb2.Index(
-        name="MHExtensions",
-        badgeLabel="MHE",
-        signingKey=SIGNING_FINGERPRINT,
+        name="MarBou",
+        badgeLabel="marbou92",
+        signingKey=normalize_fingerprint(SIGNING_FINGERPRINT),
         contact=index_pb2.Contact(
             website=f"https://github.com/{SOURCE_OWNER}/{SOURCE_NAME}",
         ),
@@ -499,9 +510,9 @@ def publish():
     repo_json = {
         "index_v2": f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/index.pb",
         "meta": {
-            "name": "MHExtensions",
+            "name": "MarBou",
             "website": f"https://github.com/{SOURCE_OWNER}/{SOURCE_NAME}",
-            "signingKeyFingerprint": SIGNING_FINGERPRINT,
+            "signingKeyFingerprint": normalize_fingerprint(SIGNING_FINGERPRINT),
         },
     }
     with open(REPO_DIR / "repo.json", "w") as f:
