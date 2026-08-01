@@ -93,15 +93,14 @@ abstract class ManhuaRMTL :
     // Browse page (/manga/) does NOT support the adult= parameter (only search does).
     // The site defaults to hiding adult content on browse, which is fine for "Hide NSFW" mode.
     // When "Hide NSFW" is OFF, we use the search endpoint with adult= to show all content.
-    private fun browseUrl(sort: String, page: Int): String =
-        if (preferences.hideNsfw()) {
-            // Hide NSFW: use browse page (site default already hides adult)
-            "$baseUrl/$mangaSubString/${searchPage(page)}?sort=$sort"
-        } else {
-            // Show all: use search endpoint with adult= (browse page can't show adult)
-            val pg = if (page > 1) "&pg=$page" else ""
-            "$baseUrl/?post_type=wp-manga&s=&sort=$sort&adult=$pg"
-        }
+    private fun browseUrl(sort: String, page: Int): String = if (preferences.hideNsfw()) {
+        // Hide NSFW: use browse page (site default already hides adult)
+        "$baseUrl/$mangaSubString/${searchPage(page)}?sort=$sort"
+    } else {
+        // Show all: use search endpoint with adult= (browse page can't show adult)
+        val pg = if (page > 1) "&pg=$page" else ""
+        "$baseUrl/?post_type=wp-manga&s=&sort=$sort&adult=$pg"
+    }
 
     // Site uses ?sort= instead of ?m_orderby=
     override fun popularMangaRequest(page: Int): Request = GET(browseUrl("trending", page), headers)
