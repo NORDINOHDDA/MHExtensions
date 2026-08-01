@@ -209,72 +209,58 @@ def cleanup(dry_run=False):
 # =============================================================================
 
 def find_built_apks():
-    """Find all built APK files in the repo."""
+    """Find all RELEASE APK files in the repo (skip debug builds)."""
     apks = []
     for root, dirs, files in os.walk(SOURCE_ROOT):
         # Skip .gradle, build intermediates, etc.
         if ".gradle" in root or "intermediates" in root:
             continue
         for f in files:
-            if f.endswith(".apk"):
+            if f.endswith(".apk") and "-release" in f:
                 apks.append(Path(root) / f)
     return apks
 
 
-def extract_apk_metadata(apk_path):
+def parse_apk_metadata_from_filename(apk_path):
     """
-    Extract metadata from a built APK using aapt2 or aapt.
-    Returns a dict with: pkg, name, versionCode, versionName, lang, isNsfw, etc.
+    Parse metadata from the APK filename.
+    Keiyoushi build produces: tachiyomi-{lang}.{name}-v{version}-release.apk
+    where version = {libVersion}.{finalVersionCode}
+
+    Examples:
+      tachiyomi-en.manhuarmtl-v1.4.55-release.apk
+        → pkg=eu.kanade.tachiyomi.extension.en.manhuarmtl
+        → lang=en, name=manhuarmtl, version=1.4.55, code=55
+
+      tachiyomi-all.comixto-v1.4.21-release.apk
+        → pkg=eu.kanade.tachiyomi.extension.all.comixto
+        → lang=all, name=comixto, version=1.4.21, code=21
     """
-    # Try aapt2 first, fall back to aapt
-    aapt = None
-    for tool in ["aapt2", "aapt"]:
-        try:
-            subprocess.run([tool, "version"], capture_output=True, check=True)
-            aapt = tool
-            break
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            continue
-
-    if aapt is None:
-        print("ERROR: Neither aapt2 nor aapt found", file=sys.stderr)
-        sys.exit(1)
-
-    # aapt2 dump badging <apk>
-    cmd = [aapt, "dump", "badging", str(apk_path)] if aapt == "aapt" else [aapt, "dump", "badging", str(apk_path)]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"ERROR: Failed to dump badging for {apk_path}", file=sys.stderr)
+    filename = apk_path.name
+    # Match: tachiyomi-{lang}.{name}-v{version}-release.apk
+    match = re.match(r"tachiyomi-(.+?)\.(.+?)-v(.+?)-release\.apk$", filename)
+    if not match:
+        print(f"  WARNING: Could not parse filename: {filename}", file=sys.stderr)
         return None
 
-    output = result.stdout
-    meta = {}
+    lang = match.group(1)
+    ext_name = match.group(2)
+    version = match.group(3)
 
-    # package: name='eu.kanade.tachiyomi.extension.en.manhuarmtl' versionCode='4' versionName='1.4.4'
-    pkg_match = re.search(r"package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'", output)
-    if pkg_match:
-        meta["pkg"] = pkg_match.group(1)
-        meta["code"] = int(pkg_match.group(2))
-        meta["version"] = pkg_match.group(3)
-    else:
-        return None
+    # version is like "1.4.55" — code is the last numeric segment
+    version_parts = version.split(".")
+    code = int(version_parts[-1]) if version_parts[-1].isdigit() else 0
 
-    # application-label:'ManhuaRMTL'
-    label_match = re.search(r"application-label:'([^']+)'", output)
-    meta["name"] = label_match.group(1) if label_match else meta["pkg"].split(".")[-1]
+    pkg = f"eu.kanade.tachiyomi.extension.{lang}.{ext_name}"
 
-    # Extract language from package name: eu.kanade.tachiyomi.extension.<lang>.<name>
-    parts = meta["pkg"].split(".")
-    if len(parts) >= 6:
-        meta["lang"] = parts[4]
-    else:
-        meta["lang"] = "all"
-
-    # Check for NSFW (android:label contains NSFW marker, or we check ContentWarning)
-    # We can't easily detect NSFW from aapt, so we leave it to the source list
-    meta["nsfw"] = False  # Will be refined if needed
-
-    return meta
+    return {
+        "pkg": pkg,
+        "lang": lang,
+        "name": ext_name,
+        "code": code,
+        "version": version,
+        "nsfw": False,  # Refined below from build.gradle.kts
+    }
 
 
 def extract_icon(apk_path, output_dir):
@@ -323,16 +309,29 @@ def publish():
     info_by_pkg = {e.get("pkg"): e for e in index.get("info", [])}
 
     for apk_path in apks:
-        meta = extract_apk_metadata(apk_path)
+        meta = parse_apk_metadata_from_filename(apk_path)
         if meta is None:
             print(f"  Skipping {apk_path} (could not extract metadata)")
             continue
 
         pkg = meta["pkg"]
-        name = meta["name"]
         code = meta["code"]
         version = meta["version"]
         lang = meta["lang"]
+
+        # Read app name and NSFW flag from the extension's build.gradle.kts
+        gradle_file = SOURCE_ROOT / "src" / lang / meta["name"] / "build.gradle.kts"
+        app_name = meta["name"].capitalize()
+        is_nsfw = False
+        if gradle_file.exists():
+            content = gradle_file.read_text()
+            name_match = re.search(r'name\s*=\s*"([^"]+)"', content)
+            if name_match:
+                app_name = name_match.group(1)
+            if "ContentWarning.NSFW" in content:
+                is_nsfw = True
+
+        name = app_name
 
         print(f"\n  Publishing {name} ({pkg}) v{version} (code {code})...")
 
@@ -366,7 +365,7 @@ def publish():
             "lang": lang,
             "code": code,
             "version": version,
-            "nsfw": meta["nsfw"],
+            "nsfw": is_nsfw,
             "hasUpdate": True,
             "hasReadme": False,
             "hasChangelog": False,
