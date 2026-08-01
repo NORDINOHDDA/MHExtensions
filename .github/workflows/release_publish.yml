@@ -130,7 +130,7 @@ jobs:
         run: |
           pip install protobuf grpcio-tools
           cd .github/scripts
-          python -m grpc_tools.protoc --python_out=. --pyi_out=. index.proto
+          python -m grpc_tools.protoc --proto_path=. --python_out=. --pyi_out=. index.proto
           echo "Generated index_pb2.py"
 
       - name: Publish to MHRepo
@@ -162,7 +162,7 @@ jobs:
         run: |
           pip install protobuf grpcio-tools
           cd .github/scripts
-          python -m grpc_tools.protoc --python_out=. --pyi_out=. index.proto
+          python -m grpc_tools.protoc --proto_path=. --python_out=. --pyi_out=. index.proto
 
       - name: Cleanup orphaned extensions (dry run)
         if: inputs.mode == 'cleanup-dry-run'
