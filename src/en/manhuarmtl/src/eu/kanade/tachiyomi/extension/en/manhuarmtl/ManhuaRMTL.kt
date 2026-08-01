@@ -1,7 +1,16 @@
 package eu.kanade.tachiyomi.extension.en.manhuarmtl
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import eu.kanade.tachiyomi.multisrc.madara.Madara
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -9,11 +18,20 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SManga
 import keiyoushi.annotation.Source
 import keiyoushi.utils.getPreferences
+import keiyoushi.utils.parseAs
+import kotlin.math.roundToInt
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import kotlin.math.roundToInt
+import java.util.concurrent.ConcurrentHashMap
 
 @Source
 abstract class ManhuaRMTL :
@@ -23,6 +41,14 @@ abstract class ManhuaRMTL :
     override val useLoadMoreRequest = LoadMoreStrategy.Never
 
     override val mangaSubString = "manga"
+
+    // Custom client with OCR text-overlay interceptor
+    override val client: OkHttpClient = network.client.newBuilder()
+        .addNetworkInterceptor(::ocrImageInterceptor)
+        .build()
+
+    // Thread-safe storage for OCR text boxes, keyed by full image URL
+    private val ocrData = ConcurrentHashMap<String, List<OcrTextBox>>()
 
     // Site excludes adult content by default; override to show everything unless the user opts out
     override val adultContentFilterOptions: Map<String, String> = mapOf(
@@ -285,8 +311,210 @@ abstract class ManhuaRMTL :
     // Standard Madara selectors work — li.wp-manga-chapter is present in the detail HTML.
     // All chapters are in the initial page load (no AJAX needed).
 
-    // ============================== Pages ==============================
-    // Standard Madara reading-content selectors work. Images use src (not data-src).
+    // ============================== Pages + OCR ==============================
+    // The site serves RAW images. English MTL text is a JS overlay fetched from
+    // fetch-ocr.php. We parse the OCR credentials from the reading page, fetch the
+    // text data, and burn it onto the images via a network interceptor.
+
+    override fun pageListParse(response: Response): List<Page> {
+        val html = response.body?.string() ?: ""
+        val document = Jsoup.parse(html, response.request.url.toString())
+
+        val pages = pageListParse(document)
+
+        if (preferences.prefersEnglish() && html.isNotBlank()) {
+            // Clear previous chapter's OCR data
+            ocrData.clear()
+
+            try {
+                val credentials = parseOcrCredentials(html)
+                if (credentials != null) {
+                    val ocrPages = fetchOcrData(credentials)
+                    if (ocrPages != null) {
+                        // Build filename → text boxes map
+                        val ocrByFilename = mutableMapOf<String, List<OcrTextBox>>()
+                        for (ocrPage in ocrPages) {
+                            val filename = ocrPage.image ?: continue
+                            val textBoxes = ocrPage.normalisedTexts()
+                            if (textBoxes.isNotEmpty()) {
+                                ocrByFilename[filename] = textBoxes
+                            }
+                        }
+
+                        // Match OCR data to pages by filename
+                        for (page in pages) {
+                            val imageUrl = page.imageUrl ?: continue
+                            val filename = imageUrl.substringAfterLast("/").substringBefore("?")
+                            val textBoxes = ocrByFilename[filename]
+                            if (textBoxes != null && textBoxes.isNotEmpty()) {
+                                ocrData[imageUrl] = textBoxes
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Fall back to raw images
+            }
+        }
+
+        return pages
+    }
+
+    /**
+     * Parse OCR credentials from the reading page HTML.
+     * The credentials are embedded in an obfuscated JS array like:
+     * ["base64cid", "hex64token", timestamp, "hex16nonce", "fetch-ocr-url", "hex32ref"]
+     */
+    private fun parseOcrCredentials(html: String): OcrCredentials? {
+        // Find the fetch-ocr.php URL
+        val urlMatch = Regex("""https?://[^"'\s]*fetch-ocr\.php""").find(html) ?: return null
+        val gateUrl = urlMatch.value
+
+        // Find the chapter data-id (cid) from the hidden input
+        val cidMatch = Regex("""data-id=["'](\d+)["']""").find(html) ?: return null
+        val cid = cidMatch.groupValues[1]
+
+        // Find the credentials array: ["...", "hex64", number, "hex16", "url", "hex32"]
+        val arrayRegex = Regex(
+            """\[\s*"[^"]*"\s*,\s*"([0-9a-f]{64})"\s*,\s*(\d+)\s*,\s*"([0-9a-f]{16})"\s*,\s*"[^"]*fetch-ocr[^"]*"\s*,\s*"([0-9a-f]{32})"\s*\]""",
+        )
+        val match = arrayRegex.find(html) ?: return null
+
+        return OcrCredentials(
+            cid = cid,
+            token = match.groupValues[1],
+            timestamp = match.groupValues[2].toLongOrNull() ?: 0L,
+            nonce = match.groupValues[3],
+            gateUrl = gateUrl,
+            ref = match.groupValues[4],
+        )
+    }
+
+    /**
+     * Fetch OCR text data from fetch-ocr.php.
+     * Returns a list of OcrPage (one per image), or null on failure.
+     */
+    private fun fetchOcrData(credentials: OcrCredentials): List<OcrPage>? {
+        val jsonBody = """{"cid":"${credentials.cid}","ref":"${credentials.ref}"}"""
+        val requestBody = jsonBody.toRequestBody("application/json".toMediaType())
+
+        val request = Request.Builder()
+            .url(credentials.gateUrl)
+            .post(requestBody)
+            .addHeader("Content-Type", "application/json")
+            .addHeader("X-Requested-With", "XMLHttpRequest")
+            .addHeader("X-Gate-Token", credentials.token)
+            .addHeader("X-Gate-Nonce", credentials.nonce)
+            .addHeader("X-Gate-Timestamp", credentials.timestamp.toString())
+            .addHeader("Referer", baseUrl)
+            .addHeader("Origin", baseUrl)
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            val body = response.body?.string()
+            response.close()
+
+            if (body.isNullOrBlank()) return null
+
+            // Try parsing as bare array first, then as envelope
+            try {
+                body.parseAs<List<OcrPage>>()
+            } catch (_: Exception) {
+                try {
+                    body.parseAs<OcrResponse>().pages()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Network interceptor that overlays English MTL text on raw chapter images.
+     * Only runs when "English (MTL)" mode is selected in settings.
+     */
+    private fun ocrImageInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val response = chain.proceed(request)
+
+        if (!preferences.prefersEnglish()) return response
+        if (!response.isSuccessful) return response
+
+        val url = request.url.toString()
+
+        // Only process images from the CDN
+        if (!url.contains("cdn.manhuarmmtl.com") && !url.contains("manhuarmmtl.com")) return response
+
+        // Look up OCR text boxes for this image URL
+        val textBoxes = ocrData[url] ?: return response
+        if (textBoxes.isEmpty()) return response
+
+        // Read the image bytes
+        val imageBytes = response.body?.bytes() ?: return response
+        if (imageBytes.isEmpty()) return response
+
+        // Overlay text on the image
+        val modifiedBytes = overlayText(imageBytes, textBoxes) ?: return response
+
+        // Build new response with modified image
+        val contentType = response.body?.contentType()
+        val newBody = modifiedBytes.toResponseBody(contentType)
+
+        return response.newBuilder()
+            .body(newBody)
+            .build()
+    }
+
+    /**
+     * Burn English text boxes onto a raw image bitmap.
+     * Returns the modified image as WebP bytes, or null on failure.
+     */
+    private fun overlayText(imageBytes: ByteArray, textBoxes: List<OcrTextBox>): ByteArray? {
+        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return null
+        val mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(mutableBitmap)
+
+        for (textBox in textBoxes) {
+            val x = textBox.box.getOrElse(0) { 0f }
+            val y = textBox.box.getOrElse(1) { 0f }
+            val w = textBox.box.getOrElse(2) { 0f }
+            val h = textBox.box.getOrElse(3) { 0f }
+
+            if (w <= 0 || h <= 0) continue
+
+            val text = textBox.text
+            if (text.isBlank()) continue
+
+            val fontSize = h * 0.65f
+
+            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                textSize = fontSize
+                setShadowLayer(fontSize * 0.2f, 2f, 2f, Color.BLACK)
+            }
+
+            // Use StaticLayout for word-wrapping within the box width
+            val boxWidth = w.toInt().coerceAtLeast(1)
+            @Suppress("DEPRECATION")
+            val layout = StaticLayout(text, paint, boxWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0f, false)
+
+            canvas.save()
+            canvas.translate(x, y)
+            layout.draw(canvas)
+            canvas.restore()
+        }
+
+        val output = java.io.ByteArrayOutputStream()
+        mutableBitmap.compress(Bitmap.CompressFormat.WEBP, 95, output)
+
+        if (bitmap != mutableBitmap) bitmap.recycle()
+        mutableBitmap.recycle()
+
+        return output.toByteArray()
+    }
 
     override fun imageRequest(page: Page): Request = GET(page.imageUrl!!.trim(), headers.newBuilder().set("Referer", baseUrl).build())
 
@@ -348,6 +576,16 @@ abstract class ManhuaRMTL :
     // ============================== Settings ==============================
 
     override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
+        // Chapter text mode (English MTL overlay vs Raw)
+        androidx.preference.ListPreference(screen.context).apply {
+            key = PREF_CHAPTER_TEXT_MODE
+            title = "Chapter text"
+            summary = "English (MTL overlay) burns translated text onto raw images. Raw shows original images only."
+            entries = arrayOf("English (MTL overlay)", "Raw images only")
+            entryValues = arrayOf("en", "raw")
+            setDefaultValue("en")
+        }.let(screen::addPreference)
+
         // Hide NSFW content globally
         androidx.preference.SwitchPreferenceCompat(screen.context).apply {
             key = PREF_HIDE_NSFW
@@ -391,6 +629,7 @@ abstract class ManhuaRMTL :
         }.let(screen::addPreference)
     }
 
+    private fun android.content.SharedPreferences.prefersEnglish(): Boolean = getString(PREF_CHAPTER_TEXT_MODE, "en") == "en"
     private fun android.content.SharedPreferences.hideNsfw(): Boolean = getBoolean(PREF_HIDE_NSFW, false)
     private fun android.content.SharedPreferences.showAltNames(): Boolean = getBoolean(PREF_SHOW_ALT_NAMES, true)
     private fun android.content.SharedPreferences.showExtraInfo(): Boolean = getBoolean(PREF_SHOW_EXTRA_INFO, true)
@@ -398,6 +637,7 @@ abstract class ManhuaRMTL :
     private fun android.content.SharedPreferences.getScorePosition(): String = getString(PREF_SCORE_POSITION, "end") ?: "end"
 
     companion object {
+        private const val PREF_CHAPTER_TEXT_MODE = "pref_chapter_text_mode"
         private const val PREF_HIDE_NSFW = "pref_hide_nsfw"
         private const val PREF_SHOW_ALT_NAMES = "pref_show_alt_names"
         private const val PREF_SHOW_EXTRA_INFO = "pref_show_extra_info"
