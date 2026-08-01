@@ -10,7 +10,6 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import eu.kanade.tachiyomi.multisrc.madara.Madara
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -19,7 +18,6 @@ import eu.kanade.tachiyomi.source.model.SManga
 import keiyoushi.annotation.Source
 import keiyoushi.utils.getPreferences
 import keiyoushi.utils.parseAs
-import kotlin.math.roundToInt
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -32,6 +30,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 
 @Source
 abstract class ManhuaRMTL :
@@ -498,6 +497,7 @@ abstract class ManhuaRMTL :
 
             // Use StaticLayout for word-wrapping within the box width
             val boxWidth = w.toInt().coerceAtLeast(1)
+
             @Suppress("DEPRECATION")
             val layout = StaticLayout(text, paint, boxWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0f, false)
 
