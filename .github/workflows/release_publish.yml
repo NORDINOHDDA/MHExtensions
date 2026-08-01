@@ -24,6 +24,8 @@ jobs:
     name: Build release APKs
     runs-on: ubuntu-latest
     if: inputs.mode == 'publish'
+    outputs:
+      signing-fingerprint: ${{ steps.fingerprint.outputs.fingerprint }}
     steps:
       - name: Checkout MHExtensions
         uses: actions/checkout@v4
@@ -49,6 +51,30 @@ jobs:
             exit 1
           fi
           echo "$SIGNING_KEY" | base64 -d > signingkey.jks
+
+      - name: Compute signing key fingerprint
+        id: fingerprint
+        env:
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          ALIAS: ${{ secrets.ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # Extract the SHA-256 fingerprint of the signing certificate
+          # This is required by Mihon in repo.json → meta.signingKeyFingerprint
+          FINGERPRINT=$(keytool -list -v \
+            -keystore signingkey.jks \
+            -storepass "$KEY_STORE_PASSWORD" \
+            -alias "$ALIAS" \
+            -keypass "$KEY_PASSWORD" \
+            | grep "SHA256:" \
+            | head -1 \
+            | awk '{print $2}')
+          if [ -z "$FINGERPRINT" ]; then
+            echo "::error::Could not extract SHA-256 fingerprint from keystore"
+            exit 1
+          fi
+          echo "fingerprint=$FINGERPRINT" >> $GITHUB_OUTPUT
+          echo "Signing key fingerprint: $FINGERPRINT"
 
       - name: Build all extensions (release)
         env:
@@ -108,6 +134,7 @@ jobs:
           SOURCE_OWNER: marbou92
           SOURCE_NAME: MHExtensions
           GITHUB_WORKSPACE: ${{ github.workspace }}
+          SIGNING_FINGERPRINT: ${{ needs.build.outputs.signing-fingerprint }}
         run: python .github/scripts/publish-repo.py
 
   cleanup:
