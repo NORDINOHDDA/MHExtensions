@@ -217,7 +217,11 @@ def cleanup(dry_run=False):
     kept.sort(key=lambda e: e.packageName)
     new_index = index_pb2.Index(
         name="MHExtensions",
+        badgeLabel="MHE",
         signingKey=SIGNING_FINGERPRINT,
+        contact=index_pb2.Contact(
+            website=f"https://github.com/{SOURCE_OWNER}/{SOURCE_NAME}",
+        ),
         extensionList=index_pb2.ExtensionList(extensions=kept),
     )
 
@@ -225,7 +229,7 @@ def cleanup(dry_run=False):
         f.write(
             json_format.MessageToJson(
                 new_index,
-                always_print_fields_with_no_presence=False,
+                always_print_fields_with_no_presence=True,
                 preserving_proto_field_name=True,
             )
         )
@@ -454,10 +458,14 @@ def publish():
     all_extensions.extend(new_extensions)
     all_extensions.sort(key=lambda e: e.packageName)
 
-    # Build the Index proto
+    # Build the Index proto (with badgeLabel and contact — required by Mihon)
     index = index_pb2.Index(
         name="MHExtensions",
+        badgeLabel="MHE",
         signingKey=SIGNING_FINGERPRINT,
+        contact=index_pb2.Contact(
+            website=f"https://github.com/{SOURCE_OWNER}/{SOURCE_NAME}",
+        ),
         extensionList=index_pb2.ExtensionList(extensions=all_extensions),
     )
 
@@ -466,7 +474,7 @@ def publish():
         f.write(
             json_format.MessageToJson(
                 index,
-                always_print_fields_with_no_presence=False,
+                always_print_fields_with_no_presence=True,
                 preserving_proto_field_name=True,
             )
         )
