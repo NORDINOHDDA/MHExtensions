@@ -92,14 +92,12 @@ abstract class ManhuaRMTL :
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     // NSFW filter applies to browse/latest ONLY (not search).
-    // Uses the search endpoint with explicit adult param:
-    //   hideNsfw=ON  → adult=0 (hide adult)
-    //   hideNsfw=OFF → adult=  (empty value = show all, including adult)
-    // Built as raw string to ensure the empty adult= value is preserved.
+    // When ON: adult=0 (hide adult)
+    // When OFF: no adult param at all (let the search endpoint use its default)
     private fun browseUrl(sort: String, page: Int): String {
-        val adultVal = if (preferences.hideNsfw()) "0" else ""
         val pg = if (page > 1) "&pg=$page" else ""
-        return "$baseUrl/?post_type=wp-manga&s=&sort=$sort&adult=$adultVal$pg"
+        val adult = if (preferences.hideNsfw()) "&adult=0" else ""
+        return "$baseUrl/?post_type=wp-manga&s=&sort=$sort$adult$pg"
     }
 
     // Site uses ?sort= instead of ?m_orderby=
@@ -346,23 +344,32 @@ abstract class ManhuaRMTL :
                 if (credentials != null) {
                     val ocrPages = fetchOcrData(credentials, readingPageUrl)
                     if (ocrPages != null && ocrPages.isNotEmpty()) {
-                        // Build filename → text boxes map
+                        // Build filename → text boxes map (try multiple key formats for robust matching)
                         val ocrByFilename = mutableMapOf<String, List<OcrTextBox>>()
                         for (ocrPage in ocrPages) {
                             val filename = ocrPage.image ?: continue
                             val textBoxes = ocrPage.normalisedTexts()
                             if (textBoxes.isNotEmpty()) {
+                                // Store under original name AND URL-decoded name
                                 ocrByFilename[filename] = textBoxes
+                                ocrByFilename[filename.replace("%20", " ")] = textBoxes
+                                ocrByFilename[filename.replace(" ", "_")] = textBoxes
                             }
                         }
 
-                        // Match OCR data to pages by filename
+                        // Match OCR data to pages by filename (try multiple formats)
                         for (page in pages) {
                             val imageUrl = page.imageUrl ?: continue
-                            val filename = imageUrl.substringAfterLast("/").substringBefore("?")
+                            // Strip leading spaces (site has src=" https://..."), get filename, strip query
+                            val filename = imageUrl.trim().substringAfterLast("/").substringBefore("?")
+                            // Also try URL-decoded version
+                            val decodedFilename = java.net.URLDecoder.decode(filename, "UTF-8")
+
                             val textBoxes = ocrByFilename[filename]
+                                ?: ocrByFilename[decodedFilename]
+                                ?: ocrByFilename[decodedFilename.replace(" ", "_")]
                             if (textBoxes != null && textBoxes.isNotEmpty()) {
-                                ocrData[imageUrl] = textBoxes
+                                ocrData[imageUrl.trim()] = textBoxes
                             }
                         }
                     }
@@ -471,8 +478,8 @@ abstract class ManhuaRMTL :
         // Only process images from the CDN
         if (!url.contains("cdn.manhuarmmtl.com") && !url.contains("manhuarmmtl.com")) return response
 
-        // Look up OCR text boxes for this image URL
-        val textBoxes = ocrData[url] ?: return response
+        // Look up OCR text boxes for this image URL (try both raw and trimmed)
+        val textBoxes = ocrData[url] ?: ocrData[url.trim()] ?: return response
         if (textBoxes.isEmpty()) return response
 
         // Read the image bytes
@@ -544,10 +551,11 @@ abstract class ManhuaRMTL :
             val maxWidth = (w * 1.4f).toInt()
 
             // Stroke paint (white outline — 4-corner shadow simulation)
+            // Using "casual" font family for a more comic/manga look (closest to Anime Ace)
             val strokePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.WHITE
                 textSize = fontSize
-                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+                typeface = Typeface.create("casual", Typeface.BOLD)
                 style = Paint.Style.STROKE
                 strokeWidth = outlineWidth * 2
             }
@@ -556,7 +564,7 @@ abstract class ManhuaRMTL :
             val fillPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.BLACK
                 textSize = fontSize
-                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+                typeface = Typeface.create("casual", Typeface.BOLD)
             }
 
             // Use StaticLayout for word-wrapping within maxWidth
@@ -568,19 +576,21 @@ abstract class ManhuaRMTL :
             val fillLayout = StaticLayout(text, fillPaint, maxWidth, Layout.Alignment.ALIGN_CENTER, 1.2f, 0f, false)
 
             // Position: horizontally centered on box center, vertically centered in box height
-            // Clamp to image bounds to prevent text from being cut off at edges
+            // Clamp BOTH horizontal and vertical to image bounds to prevent text cut-off
             val textHeight = strokeLayout.height.toFloat()
             val boxCenterX = x + w / 2f
             val verticalOffset = ((h - textHeight) / 2f).coerceAtLeast(0f)
 
-            // Clamp horizontal position so text stays within image bounds
-            // translateX is the left edge of the text layout
+            // Horizontal: clamp so text stays within image bounds
             val imgWidth = mutableBitmap.width.toFloat()
+            val imgHeight = mutableBitmap.height.toFloat()
             val layoutWidth = maxWidth.toFloat()
             val rawTranslateX = boxCenterX - layoutWidth / 2f
-            // Ensure text doesn't go off the left or right edge of the image
             val translateX = rawTranslateX.coerceIn(0f, (imgWidth - layoutWidth).coerceAtLeast(0f))
-            val translateY = y + verticalOffset
+
+            // Vertical: clamp so text doesn't go off the bottom of the image
+            val rawTranslateY = y + verticalOffset
+            val translateY = rawTranslateY.coerceIn(0f, (imgHeight - textHeight).coerceAtLeast(0f))
 
             canvas.save()
             canvas.translate(translateX, translateY)
