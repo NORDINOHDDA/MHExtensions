@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
@@ -91,15 +92,13 @@ abstract class ManhuaRMTL :
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     // NSFW filter applies to browse/latest ONLY (not search).
-    // When ON: use browse page (site default already hides adult).
-    // When OFF: use search endpoint with adult= to show ALL content including adult.
-    private fun browseUrl(sort: String, page: Int): String = if (preferences.hideNsfw()) {
-        // Hide NSFW: use browse page (site default already hides adult)
-        "$baseUrl/$mangaSubString/${searchPage(page)}?sort=$sort"
-    } else {
-        // Show all: use search endpoint with adult= (browse page can't show adult)
+    // Always uses the search endpoint (which supports the adult param) with explicit adult value:
+    //   hideNsfw=ON  → adult=0 (hide adult)
+    //   hideNsfw=OFF → adult=  (empty = show all, including adult)
+    private fun browseUrl(sort: String, page: Int): String {
+        val adult = if (preferences.hideNsfw()) "0" else ""
         val pg = if (page > 1) "&pg=$page" else ""
-        "$baseUrl/?post_type=wp-manga&s=&sort=$sort&adult=$pg"
+        return "$baseUrl/?post_type=wp-manga&s=&sort=$sort&adult=$adult$pg"
     }
 
     // Site uses ?sort= instead of ?m_orderby=
@@ -493,8 +492,8 @@ abstract class ManhuaRMTL :
 
     /**
      * Burn English text boxes onto a raw image bitmap.
-     * Draws a semi-transparent black background behind each text box for readability,
-     * then renders white text with a black outline on top.
+     * Matches the site's overlay style: white text with black outline, no background.
+     * Uses stroke + fill technique for crisp text outline (like manga scanlations).
      */
     private fun overlayText(imageBytes: ByteArray, textBoxes: List<OcrTextBox>): ByteArray? {
         val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return null
@@ -512,31 +511,42 @@ abstract class ManhuaRMTL :
             val text = textBox.text
             if (text.isBlank()) continue
 
-            val fontSize = h * 0.65f
+            // Font size proportional to box height (matches site's scaling)
+            val fontSize = h * 0.5f
+            val boxWidth = w.toInt().coerceAtLeast(1)
 
-            // Draw semi-transparent black background for readability
-            val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(160, 0, 0, 0)
-                style = Paint.Style.FILL
+            // Stroke paint (black outline)
+            val strokePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.BLACK
+                textSize = fontSize
+                typeface = Typeface.SANS_SERIF
+                style = Paint.Style.STROKE
+                strokeWidth = fontSize * 0.18f
             }
-            canvas.drawRect(x, y, x + w, y + h, bgPaint)
 
-            // Draw text with outline
-            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            // Fill paint (white text)
+            val fillPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.WHITE
                 textSize = fontSize
-                setShadowLayer(fontSize * 0.15f, 1f, 1f, Color.BLACK)
+                typeface = Typeface.SANS_SERIF
             }
 
             // Use StaticLayout for word-wrapping within the box width
-            val boxWidth = w.toInt().coerceAtLeast(1)
+            @Suppress("DEPRECATION")
+            val strokeLayout = StaticLayout(text, strokePaint, boxWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0f, false)
 
             @Suppress("DEPRECATION")
-            val layout = StaticLayout(text, paint, boxWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0f, false)
+            val fillLayout = StaticLayout(text, fillPaint, boxWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0f, false)
+
+            // Center text vertically within the box
+            val textHeight = strokeLayout.height.toFloat()
+            val verticalOffset = ((h - textHeight) / 2f).coerceAtLeast(0f)
 
             canvas.save()
-            canvas.translate(x, y)
-            layout.draw(canvas)
+            canvas.translate(x, y + verticalOffset)
+            // Draw stroke (outline) first, then fill on top
+            strokeLayout.draw(canvas)
+            fillLayout.draw(canvas)
             canvas.restore()
         }
 
