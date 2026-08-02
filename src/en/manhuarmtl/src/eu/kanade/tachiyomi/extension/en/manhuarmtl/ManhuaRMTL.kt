@@ -92,13 +92,20 @@ abstract class ManhuaRMTL :
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     // NSFW filter applies to browse/latest ONLY (not search).
-    // Uses the search endpoint (which supports the adult param):
-    //   hideNsfw=ON  → adult=0 (hide adult content)
-    //   hideNsfw=OFF → no adult param (site shows all by default on search endpoint)
+    // Uses the search endpoint with explicit adult param:
+    //   hideNsfw=ON  → adult=0 (hide adult)
+    //   hideNsfw=OFF → adult=  (empty value = show all, including adult)
+    // IMPORTANT: the adult param must be present with empty value — omitting it
+    // entirely causes the site to default to hiding adult content.
     private fun browseUrl(sort: String, page: Int): String {
-        val pg = if (page > 1) "&pg=$page" else ""
-        val adult = if (preferences.hideNsfw()) "&adult=0" else ""
-        return "$baseUrl/?post_type=wp-manga&s=&sort=$sort$adult$pg"
+        val url = "$baseUrl/".toHttpUrl().newBuilder().apply {
+            addQueryParameter("post_type", "wp-manga")
+            addQueryParameter("s", "")
+            addQueryParameter("sort", sort)
+            addQueryParameter("adult", if (preferences.hideNsfw()) "0" else "")
+            if (page > 1) addQueryParameter("pg", page.toString())
+        }.build()
+        return url.toString()
     }
 
     // Site uses ?sort= instead of ?m_orderby=
@@ -515,16 +522,23 @@ abstract class ManhuaRMTL :
             if (text.isBlank()) continue
 
             // ===== Font size calculation (exact match to site's JS) =====
+            // Site's formula:
+            // 1. baseFontSize = min(sqrt(w*h)/sqrt(len), w/len, h/2)
+            // 2. Clamp baseFontSize to [8, 64]  (MIN_FONT_SIZE=8 on desktop)
+            // 3. finalFontSize = baseFontSize * 2  (200% user setting)
+            // 4. Clamp finalFontSize to [8, 64]
             val textLength = text.length
             val boxArea = w * h
-            val baseFontSize = Math.sqrt(boxArea.toDouble()) / Math.sqrt(textLength.toDouble())
+            val areaFactor = Math.sqrt(boxArea.toDouble()) / Math.sqrt(textLength.toDouble())
             val widthFactor = w.toDouble() / textLength
             val heightFactor = h.toDouble() / 2.0
-            val minBase = minOf(baseFontSize, widthFactor, heightFactor)
-            // Site multiplies by 2 (200% default user setting)
-            var fontSize = (minBase * 2.0).toFloat()
-            // Clamp [8, 64]
-            fontSize = fontSize.coerceIn(8f, 64f)
+            val rawBase = minOf(areaFactor, widthFactor, heightFactor)
+            // Step 2: clamp base to [8, 64] BEFORE multiplying
+            val clampedBase = rawBase.coerceIn(8.0, 64.0)
+            // Step 3: multiply by 2 (200% default user setting)
+            val finalSize = clampedBase * 2.0
+            // Step 4: clamp final to [8, 64]
+            val fontSize = finalSize.toFloat().coerceIn(8f, 64f)
 
             // Outline width: max(0.75, fontSize * 0.08)
             val outlineWidth = maxOf(0.75f, fontSize * 0.08f)
