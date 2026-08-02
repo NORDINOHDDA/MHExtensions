@@ -92,13 +92,13 @@ abstract class ManhuaRMTL :
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     // NSFW filter applies to browse/latest ONLY (not search).
-    // Always uses the search endpoint (which supports the adult param) with explicit adult value:
-    //   hideNsfw=ON  → adult=0 (hide adult)
-    //   hideNsfw=OFF → adult=  (empty = show all, including adult)
+    // Uses the search endpoint (which supports the adult param):
+    //   hideNsfw=ON  → adult=0 (hide adult content)
+    //   hideNsfw=OFF → no adult param (site shows all by default on search endpoint)
     private fun browseUrl(sort: String, page: Int): String {
-        val adult = if (preferences.hideNsfw()) "0" else ""
         val pg = if (page > 1) "&pg=$page" else ""
-        return "$baseUrl/?post_type=wp-manga&s=&sort=$sort&adult=$adult$pg"
+        val adult = if (preferences.hideNsfw()) "&adult=0" else ""
+        return "$baseUrl/?post_type=wp-manga&s=&sort=$sort$adult$pg"
     }
 
     // Site uses ?sort= instead of ?m_orderby=
@@ -492,8 +492,11 @@ abstract class ManhuaRMTL :
 
     /**
      * Burn English text boxes onto a raw image bitmap.
-     * Matches the site's overlay style: white text with black outline, no background.
-     * Uses stroke + fill technique for crisp text outline (like manga scanlations).
+     * Matches the site's exact rendering:
+     * - Font size: min(sqrt(w*h)/sqrt(len), w/len, h/2) * 2, clamped [8, 64]
+     * - Text centered horizontally on box center, top-aligned to box top
+     * - Vertically centered within full box height
+     * - Black text with 4-corner white outline (0 blur)
      */
     private fun overlayText(imageBytes: ByteArray, textBoxes: List<OcrTextBox>): ByteArray? {
         val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return null
@@ -511,39 +514,59 @@ abstract class ManhuaRMTL :
             val text = textBox.text
             if (text.isBlank()) continue
 
-            // Font size proportional to box height (matches site's scaling)
-            val fontSize = h * 0.5f
-            val boxWidth = w.toInt().coerceAtLeast(1)
+            // ===== Font size calculation (exact match to site's JS) =====
+            val textLength = text.length
+            val boxArea = w * h
+            val baseFontSize = Math.sqrt(boxArea.toDouble()) / Math.sqrt(textLength.toDouble())
+            val widthFactor = w.toDouble() / textLength
+            val heightFactor = h.toDouble() / 2.0
+            val minBase = minOf(baseFontSize, widthFactor, heightFactor)
+            // Site multiplies by 2 (200% default user setting)
+            var fontSize = (minBase * 2.0).toFloat()
+            // Clamp [8, 64]
+            fontSize = fontSize.coerceIn(8f, 64f)
 
-            // Stroke paint (black outline)
+            // Outline width: max(0.75, fontSize * 0.08)
+            val outlineWidth = maxOf(0.75f, fontSize * 0.08f)
+
+            // maxWidth = w * 1.4 (text can extend beyond box)
+            val maxWidth = (w * 1.4f).toInt()
+
+            // Stroke paint (white outline — 4-corner shadow simulation)
             val strokePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.BLACK
-                textSize = fontSize
-                typeface = Typeface.SANS_SERIF
-                style = Paint.Style.STROKE
-                strokeWidth = fontSize * 0.18f
-            }
-
-            // Fill paint (white text)
-            val fillPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.WHITE
                 textSize = fontSize
-                typeface = Typeface.SANS_SERIF
+                typeface = Typeface.DEFAULT_BOLD
+                style = Paint.Style.STROKE
+                strokeWidth = outlineWidth * 2
             }
 
-            // Use StaticLayout for word-wrapping within the box width
+            // Fill paint (black text)
+            val fillPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.BLACK
+                textSize = fontSize
+                typeface = Typeface.DEFAULT_BOLD
+            }
+
+            // Use StaticLayout for word-wrapping within maxWidth
+            // Line spacing multiplier 1.2 to match site's line-height
             @Suppress("DEPRECATION")
-            val strokeLayout = StaticLayout(text, strokePaint, boxWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0f, false)
+            val strokeLayout = StaticLayout(text, strokePaint, maxWidth, Layout.Alignment.ALIGN_CENTER, 1.2f, 0f, false)
 
             @Suppress("DEPRECATION")
-            val fillLayout = StaticLayout(text, fillPaint, boxWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0f, false)
+            val fillLayout = StaticLayout(text, fillPaint, maxWidth, Layout.Alignment.ALIGN_CENTER, 1.2f, 0f, false)
 
-            // Center text vertically within the box
+            // Position: horizontally centered on box center, vertically centered in box height
             val textHeight = strokeLayout.height.toFloat()
+            val boxCenterX = x + w / 2f
             val verticalOffset = ((h - textHeight) / 2f).coerceAtLeast(0f)
 
+            // translateX: center the layout on boxCenterX
+            val translateX = boxCenterX - maxWidth / 2f
+            val translateY = y + verticalOffset
+
             canvas.save()
-            canvas.translate(x, y + verticalOffset)
+            canvas.translate(translateX, translateY)
             // Draw stroke (outline) first, then fill on top
             strokeLayout.draw(canvas)
             fillLayout.draw(canvas)
