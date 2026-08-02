@@ -92,11 +92,12 @@ abstract class ManhuaRMTL :
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     // NSFW filter applies to browse/latest ONLY (not search).
-    // When ON: adult=0 (hide adult)
-    // When OFF: no adult param at all (let the search endpoint use its default)
+    // Always includes the adult param:
+    //   hideNsfw=ON  → adult=0 (hide adult)
+    //   hideNsfw=OFF → adult=  (empty = show all, including adult)
     private fun browseUrl(sort: String, page: Int): String {
         val pg = if (page > 1) "&pg=$page" else ""
-        val adult = if (preferences.hideNsfw()) "&adult=0" else ""
+        val adult = if (preferences.hideNsfw()) "&adult=0" else "&adult="
         return "$baseUrl/?post_type=wp-manga&s=&sort=$sort$adult$pg"
     }
 
@@ -541,8 +542,8 @@ abstract class ManhuaRMTL :
             val finalSize = clampedBase * 2.0
             // Step 4: clamp final to [8, 64]
             val siteFontSize = finalSize.toFloat().coerceIn(8f, 64f)
-            // Step 5: make 25% bigger for better readability
-            val fontSize = (siteFontSize * 1.25f).coerceIn(8f, 80f)
+            // Step 5: make 35% bigger for better readability
+            val fontSize = (siteFontSize * 1.35f).coerceIn(8f, 90f)
 
             // Outline width: max(0.75, fontSize * 0.08)
             val outlineWidth = maxOf(0.75f, fontSize * 0.08f)
