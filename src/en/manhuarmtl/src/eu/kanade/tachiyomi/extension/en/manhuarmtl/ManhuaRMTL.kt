@@ -95,17 +95,11 @@ abstract class ManhuaRMTL :
     // Uses the search endpoint with explicit adult param:
     //   hideNsfw=ON  → adult=0 (hide adult)
     //   hideNsfw=OFF → adult=  (empty value = show all, including adult)
-    // IMPORTANT: the adult param must be present with empty value — omitting it
-    // entirely causes the site to default to hiding adult content.
+    // Built as raw string to ensure the empty adult= value is preserved.
     private fun browseUrl(sort: String, page: Int): String {
-        val url = "$baseUrl/".toHttpUrl().newBuilder().apply {
-            addQueryParameter("post_type", "wp-manga")
-            addQueryParameter("s", "")
-            addQueryParameter("sort", sort)
-            addQueryParameter("adult", if (preferences.hideNsfw()) "0" else "")
-            if (page > 1) addQueryParameter("pg", page.toString())
-        }.build()
-        return url.toString()
+        val adultVal = if (preferences.hideNsfw()) "0" else ""
+        val pg = if (page > 1) "&pg=$page" else ""
+        return "$baseUrl/?post_type=wp-manga&s=&sort=$sort&adult=$adultVal$pg"
     }
 
     // Site uses ?sort= instead of ?m_orderby=
@@ -521,12 +515,13 @@ abstract class ManhuaRMTL :
             val text = textBox.text
             if (text.isBlank()) continue
 
-            // ===== Font size calculation (exact match to site's JS) =====
+            // ===== Font size calculation (exact match to site's JS, +25% bigger) =====
             // Site's formula:
             // 1. baseFontSize = min(sqrt(w*h)/sqrt(len), w/len, h/2)
-            // 2. Clamp baseFontSize to [8, 64]  (MIN_FONT_SIZE=8 on desktop)
+            // 2. Clamp baseFontSize to [8, 64]
             // 3. finalFontSize = baseFontSize * 2  (200% user setting)
             // 4. Clamp finalFontSize to [8, 64]
+            // 5. Custom: multiply by 1.25 for better readability
             val textLength = text.length
             val boxArea = w * h
             val areaFactor = Math.sqrt(boxArea.toDouble()) / Math.sqrt(textLength.toDouble())
@@ -538,7 +533,9 @@ abstract class ManhuaRMTL :
             // Step 3: multiply by 2 (200% default user setting)
             val finalSize = clampedBase * 2.0
             // Step 4: clamp final to [8, 64]
-            val fontSize = finalSize.toFloat().coerceIn(8f, 64f)
+            val siteFontSize = finalSize.toFloat().coerceIn(8f, 64f)
+            // Step 5: make 25% bigger for better readability
+            val fontSize = (siteFontSize * 1.25f).coerceIn(8f, 80f)
 
             // Outline width: max(0.75, fontSize * 0.08)
             val outlineWidth = maxOf(0.75f, fontSize * 0.08f)
@@ -550,7 +547,7 @@ abstract class ManhuaRMTL :
             val strokePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.WHITE
                 textSize = fontSize
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
                 style = Paint.Style.STROKE
                 strokeWidth = outlineWidth * 2
             }
@@ -559,7 +556,7 @@ abstract class ManhuaRMTL :
             val fillPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.BLACK
                 textSize = fontSize
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
             }
 
             // Use StaticLayout for word-wrapping within maxWidth
@@ -571,12 +568,18 @@ abstract class ManhuaRMTL :
             val fillLayout = StaticLayout(text, fillPaint, maxWidth, Layout.Alignment.ALIGN_CENTER, 1.2f, 0f, false)
 
             // Position: horizontally centered on box center, vertically centered in box height
+            // Clamp to image bounds to prevent text from being cut off at edges
             val textHeight = strokeLayout.height.toFloat()
             val boxCenterX = x + w / 2f
             val verticalOffset = ((h - textHeight) / 2f).coerceAtLeast(0f)
 
-            // translateX: center the layout on boxCenterX
-            val translateX = boxCenterX - maxWidth / 2f
+            // Clamp horizontal position so text stays within image bounds
+            // translateX is the left edge of the text layout
+            val imgWidth = mutableBitmap.width.toFloat()
+            val layoutWidth = maxWidth.toFloat()
+            val rawTranslateX = boxCenterX - layoutWidth / 2f
+            // Ensure text doesn't go off the left or right edge of the image
+            val translateX = rawTranslateX.coerceIn(0f, (imgWidth - layoutWidth).coerceAtLeast(0f))
             val translateY = y + verticalOffset
 
             canvas.save()
