@@ -90,9 +90,9 @@ abstract class ManhuaRMTL :
     override fun latestUpdatesFromElement(element: Element): SManga = popularMangaFromElement(element)
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
-    // Browse page (/manga/) does NOT support the adult= parameter (only search does).
-    // The site defaults to hiding adult content on browse, which is fine for "Hide NSFW" mode.
-    // When "Hide NSFW" is OFF, we use the search endpoint with adult= to show all content.
+    // NSFW filter applies to browse/latest ONLY (not search).
+    // When ON: use browse page (site default already hides adult).
+    // When OFF: use search endpoint with adult= to show ALL content including adult.
     private fun browseUrl(sort: String, page: Int): String = if (preferences.hideNsfw()) {
         // Hide NSFW: use browse page (site default already hides adult)
         "$baseUrl/$mangaSubString/${searchPage(page)}?sort=$sort"
@@ -110,20 +110,14 @@ abstract class ManhuaRMTL :
     override fun popularMangaNextPageSelector(): String? = "a.next.page-numbers, a.mrm-pager__btn[rel=next]"
 
     // ============================== Search ==============================
+    // Search ALWAYS shows everything — the NSFW setting does NOT filter search.
+    // The user can still find NSFW content via search even when "Hide NSFW" is ON.
 
-    // Search uses the root endpoint with &pg=N pagination (NOT path-based /page/N/)
     override fun searchRequest(page: Int, query: String, filters: FilterList): Request {
         // Check if user explicitly selected an Adult content filter
         val adultFilter = filters.filterIsInstance<AdultContentFilter>().firstOrNull()
-        // Determine the adult param value:
-        // - hideNsfw=ON → always "0" (hide adult, overrides filter)
-        // - hideNsfw=OFF + filter selected → use filter value
-        // - hideNsfw=OFF + no filter → "" (show all, including adult)
-        val adultValue = when {
-            preferences.hideNsfw() -> "0"
-            adultFilter != null -> adultFilter.toUriPart()
-            else -> ""
-        }
+        // Default to "show all" in search — the NSFW setting doesn't affect search
+        val adultValue = adultFilter?.toUriPart() ?: ""
 
         val url = "$baseUrl/".toHttpUrl().newBuilder().apply {
             addQueryParameter("post_type", "wp-manga")
@@ -333,8 +327,8 @@ abstract class ManhuaRMTL :
 
     // ============================== Pages + OCR ==============================
     // The site serves RAW images. English MTL text is a JS overlay fetched from
-    // fetch-ocr.php. We parse the OCR credentials from the reading page, fetch the
-    // text data, and burn it onto the images via a network interceptor.
+    // fetch-ocr.php. We parse the _0xvault credentials from the reading page,
+    // fetch the text data, and burn it onto the images via a network interceptor.
 
     override fun pageListParse(response: Response): List<Page> {
         val html = response.body?.string() ?: ""
@@ -362,7 +356,7 @@ abstract class ManhuaRMTL :
                             }
                         }
 
-                        // Match OCR data to pages by filename (also try URL-decoded filename)
+                        // Match OCR data to pages by filename
                         for (page in pages) {
                             val imageUrl = page.imageUrl ?: continue
                             val filename = imageUrl.substringAfterLast("/").substringBefore("?")
@@ -383,75 +377,50 @@ abstract class ManhuaRMTL :
 
     /**
      * Parse OCR credentials from the reading page HTML.
-     * The credentials are embedded in an obfuscated JS array like:
-     * ["base64cid", "hex64token", timestamp, "hex16nonce", "fetch-ocr-url", "hex32ref"]
-     * The array may be split across multiple lines or have varying whitespace.
+     * The credentials are in a JS array: _0xvault = ["base64cid","hex64token",ts,"hex16nonce","url","hex32ref"]
      */
     private fun parseOcrCredentials(html: String): OcrCredentials? {
-        // Find the fetch-ocr.php URL
-        val urlMatch = Regex("""https?://[^"'\s]*fetch-ocr\.php""").find(html) ?: return null
-        val gateUrl = urlMatch.value
-
-        // Find the chapter data-id (cid) from the hidden input
-        val cidMatch = Regex("""data-id=["'](\d+)["']""").find(html) ?: return null
-        val cid = cidMatch.groupValues[1]
-
-        // Strategy 1: Find the full credentials array with the fetch-ocr URL in it
-        // Looks for: [..., "hex64", number, "hex16", "...fetch-ocr...", "hex32"]
-        val arrayRegex = Regex(
-            """\[[^\]]*?"([0-9a-f]{64})"\s*,\s*(\d+)\s*,\s*"([0-9a-f]{16})"\s*,\s*"[^"]*fetch-ocr[^"]*"\s*,\s*"([0-9a-f]{32})"[^\]]*?\]""",
-            RegexOption.DOT_MATCHES_ALL,
+        // Find the _0xvault array — it contains exactly 6 elements
+        // ["base64","hex64",number,"hex16","url","hex32"]
+        val vaultRegex = Regex(
+            """_0xvault\s*=\s*\[\s*"([A-Za-z0-9+/=]+)"\s*,\s*"([0-9a-f]{64})"\s*,\s*(\d+)\s*,\s*"([0-9a-f]{16})"\s*,\s*"(https?:\\?/\\?/[^"]+fetch-ocr\.php)"\s*,\s*"([0-9a-f]{32})"\s*\]""",
         )
-        val match = arrayRegex.find(html)
-        if (match != null) {
-            return OcrCredentials(
-                cid = cid,
-                token = match.groupValues[1],
-                timestamp = match.groupValues[2].toLongOrNull() ?: 0L,
-                nonce = match.groupValues[3],
-                gateUrl = gateUrl,
-                ref = match.groupValues[4],
-            )
-        }
+        val match = vaultRegex.find(html) ?: return null
 
-        // Strategy 2: Find individual hex strings near the fetch-ocr URL
-        // Token = 64 hex chars, Nonce = 16 hex chars, Ref = 32 hex chars
-        val tokenMatch = Regex(""""([0-9a-f]{64})"""").find(html)
-        val nonceMatch = Regex(""""([0-9a-f]{16})"""").findAll(html).lastOrNull()
-        val refMatch = Regex(""""([0-9a-f]{32})"""").findAll(html).lastOrNull()
-        val tsMatch = Regex("""\b(1[0-9]{9})\b""").find(html)
+        // Unescape the URL (JS uses \/ for /)
+        val gateUrl = match.groupValues[5].replace("\\/", "/")
 
-        if (tokenMatch != null && nonceMatch != null && refMatch != null) {
-            return OcrCredentials(
-                cid = cid,
-                token = tokenMatch.groupValues[1],
-                timestamp = tsMatch?.groupValues?.get(1)?.toLongOrNull() ?: 0L,
-                nonce = nonceMatch.groupValues[1],
-                gateUrl = gateUrl,
-                ref = refMatch.groupValues[1],
-            )
-        }
-
-        return null
+        return OcrCredentials(
+            cid = match.groupValues[1], // base64 — sent as-is, do NOT decode
+            token = match.groupValues[2], // 64-hex
+            timestamp = match.groupValues[3].toLongOrNull() ?: 0L,
+            nonce = match.groupValues[4], // 16-hex
+            gateUrl = gateUrl,
+            ref = match.groupValues[6], // 32-hex
+        )
     }
 
     /**
      * Fetch OCR text data from fetch-ocr.php.
-     * Uses the source's default headers (User-Agent) for Cloudflare compatibility.
-     * Returns a list of OcrPage (one per image), or null on failure.
+     * Sends the exact same request as the site's JS:
+     * - POST with JSON body {"cid":"<base64>","ref":"<hex>"}
+     * - Headers: X-Gate-Token, X-Gate-Nonce, X-Gate-Timestamp, X-Requested-With, Cache-Control
+     * - Origin and Referer headers are REQUIRED (site returns 403 without them)
      */
     private fun fetchOcrData(credentials: OcrCredentials, readingPageUrl: String): List<OcrPage>? {
+        // Body: cid stays base64, ref is hex — both as-is from _0xvault
         val jsonBody = """{"cid":"${credentials.cid}","ref":"${credentials.ref}"}"""
         val requestBody = jsonBody.toRequestBody("application/json".toMediaType())
 
         // Use the source's default headers (includes User-Agent) as a base,
-        // then override with OCR-specific headers (header() overwrites, addHeader() appends)
+        // then set all required OCR headers
         val request = Request.Builder()
             .url(credentials.gateUrl)
             .post(requestBody)
             .headers(headers)
             .header("Content-Type", "application/json")
             .header("X-Requested-With", "XMLHttpRequest")
+            .header("Cache-Control", "no-cache")
             .header("X-Gate-Token", credentials.token)
             .header("X-Gate-Nonce", credentials.nonce)
             .header("X-Gate-Timestamp", credentials.timestamp.toString())
@@ -526,7 +495,6 @@ abstract class ManhuaRMTL :
      * Burn English text boxes onto a raw image bitmap.
      * Draws a semi-transparent black background behind each text box for readability,
      * then renders white text with a black outline on top.
-     * Returns the modified image as WebP bytes, or null on failure.
      */
     private fun overlayText(imageBytes: ByteArray, textBoxes: List<OcrTextBox>): ByteArray? {
         val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return null
@@ -651,11 +619,11 @@ abstract class ManhuaRMTL :
             setDefaultValue("en")
         }.let(screen::addPreference)
 
-        // Hide NSFW content globally
+        // Hide NSFW content from browse/latest only (does NOT affect search)
         androidx.preference.SwitchPreferenceCompat(screen.context).apply {
             key = PREF_HIDE_NSFW
-            title = "Hide NSFW content"
-            summary = "Hide adult content from browse and search (overrides the Adult content filter)"
+            title = "Hide NSFW in browse"
+            summary = "Hide adult content from Popular and Latest lists. Search is unaffected — you can still find NSFW content via search."
             setDefaultValue(false)
         }.let(screen::addPreference)
 
