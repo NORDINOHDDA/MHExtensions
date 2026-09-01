@@ -19,6 +19,7 @@ import eu.kanade.tachiyomi.source.model.SManga
 import keiyoushi.annotation.Source
 import keiyoushi.utils.getPreferences
 import keiyoushi.utils.parseAs
+import kotlinx.serialization.json.JsonElement
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -336,7 +337,9 @@ abstract class ManhuaRMTL :
 
         val pages = pageListParse(document)
 
-        if (preferences.prefersEnglish() && html.isNotBlank()) {
+        val textMode = preferences.chapterTextMode()
+
+        if (textMode != "raw" && html.isNotBlank()) {
             // Clear previous chapter's OCR data
             ocrData.clear()
 
@@ -349,7 +352,12 @@ abstract class ManhuaRMTL :
                         val ocrByFilename = mutableMapOf<String, List<OcrTextBox>>()
                         for (ocrPage in ocrPages) {
                             val filename = ocrPage.image ?: continue
-                            val textBoxes = ocrPage.normalisedTexts()
+                            var textBoxes = ocrPage.normalisedTexts()
+                            // Arabic mode: translate the already-extracted English MTL text to Arabic.
+                            // Coordinates (box) are kept untouched — only .text changes.
+                            if (textMode == "ar" && textBoxes.isNotEmpty()) {
+                                textBoxes = translateTextBoxes(textBoxes, "ar")
+                            }
                             if (textBoxes.isNotEmpty()) {
                                 // Store under original name AND URL-decoded name
                                 ocrByFilename[filename] = textBoxes
@@ -464,6 +472,73 @@ abstract class ManhuaRMTL :
     }
 
     /**
+     * Translate a page's text boxes using the free, unofficial Google Translate
+     * "gtx" endpoint (the same one translate.google.com's web client uses — no API key).
+     *
+     * All texts for a page are joined with "\n" and sent as ONE request (to avoid
+     * one HTTP call per text box), then the response is split back on "\n".
+     * If the split doesn't line up 1:1 with the input (Google sometimes merges/
+     * splits sentences), each text is retried individually as a safe fallback.
+     * Box coordinates are never touched — only .text is replaced.
+     */
+    private fun translateTextBoxes(boxes: List<OcrTextBox>, targetLang: String): List<OcrTextBox> {
+        if (boxes.isEmpty()) return boxes
+
+        val joined = boxes.joinToString("\n") { it.text }
+        val batchResult = googleTranslate(joined, targetLang)
+        val lines = batchResult?.split("\n")
+
+        if (lines != null && lines.size == boxes.size) {
+            return boxes.mapIndexed { i, box -> box.copy(text = lines[i].trim()) }
+        }
+
+        // Fallback: translate one by one (slower, but robust if batching misaligns)
+        return boxes.map { box ->
+            val translated = googleTranslate(box.text, targetLang)
+            box.copy(text = translated?.trim()?.ifBlank { box.text } ?: box.text)
+        }
+    }
+
+    /**
+     * Single call to Google's free translate_a/single endpoint.
+     * Returns null on any network/parsing failure (caller falls back to the
+     * original — usually English — text so a translation hiccup never breaks a page).
+     */
+    private fun googleTranslate(text: String, targetLang: String): String? {
+        if (text.isBlank()) return text
+
+        return try {
+            val url = "https://translate.googleapis.com/translate_a/single".toHttpUrl().newBuilder()
+                .addQueryParameter("client", "gtx")
+                .addQueryParameter("sl", "en")
+                .addQueryParameter("tl", targetLang)
+                .addQueryParameter("dt", "t")
+                .addQueryParameter("q", text)
+                .build()
+
+            val request = Request.Builder().url(url).headers(headers).build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string()
+            response.close()
+
+            if (body.isNullOrBlank()) return null
+
+            // Response shape: [[["<translated>","<original>",null,null,...], ...], null, "en", ...]
+            val root = body.parseAs<List<JsonElement>>()
+            val segments = (root.getOrNull(0) as? kotlinx.serialization.json.JsonArray) ?: return null
+            val sb = StringBuilder()
+            for (seg in segments) {
+                val arr = seg as? kotlinx.serialization.json.JsonArray ?: continue
+                val piece = (arr.getOrNull(0) as? kotlinx.serialization.json.JsonPrimitive)?.content ?: continue
+                sb.append(piece)
+            }
+            sb.toString().ifBlank { null }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
      * Network interceptor that overlays English MTL text on raw chapter images.
      * Only runs when "English (MTL)" mode is selected in settings.
      */
@@ -471,7 +546,7 @@ abstract class ManhuaRMTL :
         val request = chain.request()
         val response = chain.proceed(request)
 
-        if (!preferences.prefersEnglish()) return response
+        if (preferences.chapterTextMode() == "raw") return response
         if (!response.isSuccessful) return response
 
         val url = request.url.toString()
@@ -488,7 +563,8 @@ abstract class ManhuaRMTL :
         if (imageBytes.isEmpty()) return response
 
         // Overlay text on the image
-        val modifiedBytes = overlayText(imageBytes, textBoxes) ?: return response
+        val isRtl = preferences.chapterTextMode() == "ar"
+        val modifiedBytes = overlayText(imageBytes, textBoxes, isRtl) ?: return response
 
         // Build new response with modified image
         val contentType = response.body?.contentType()
@@ -506,8 +582,27 @@ abstract class ManhuaRMTL :
      * - Text centered horizontally on box center, top-aligned to box top
      * - Vertically centered within full box height
      * - Black text with 4-corner white outline (0 blur)
+     *
+     * @param isRtl When true (Arabic mode), text is laid out right-to-left using
+     *   StaticLayout.Builder with TextDirectionHeuristics.RTL (API 23+). On older
+     *   API levels this falls back to the legacy constructor, which still renders
+     *   Arabic shaping correctly but paragraph alignment may look slightly off.
      */
-    private fun overlayText(imageBytes: ByteArray, textBoxes: List<OcrTextBox>): ByteArray? {
+    private fun buildStaticLayout(text: CharSequence, paint: TextPaint, maxWidth: Int, isRtl: Boolean): StaticLayout {
+        return if (isRtl && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            StaticLayout.Builder.obtain(text, 0, text.length, paint, maxWidth)
+                .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                .setLineSpacing(0f, 1.2f)
+                .setIncludePad(false)
+                .setTextDirection(android.text.TextDirectionHeuristics.RTL)
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            StaticLayout(text, paint, maxWidth, Layout.Alignment.ALIGN_CENTER, 1.2f, 0f, false)
+        }
+    }
+
+    private fun overlayText(imageBytes: ByteArray, textBoxes: List<OcrTextBox>, isRtl: Boolean = false): ByteArray? {
         val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return null
         val mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(mutableBitmap)
@@ -570,11 +665,8 @@ abstract class ManhuaRMTL :
 
             // Use StaticLayout for word-wrapping within maxWidth
             // Line spacing multiplier 1.2 to match site's line-height
-            @Suppress("DEPRECATION")
-            val strokeLayout = StaticLayout(text, strokePaint, maxWidth, Layout.Alignment.ALIGN_CENTER, 1.2f, 0f, false)
-
-            @Suppress("DEPRECATION")
-            val fillLayout = StaticLayout(text, fillPaint, maxWidth, Layout.Alignment.ALIGN_CENTER, 1.2f, 0f, false)
+            val strokeLayout = buildStaticLayout(text, strokePaint, maxWidth, isRtl)
+            val fillLayout = buildStaticLayout(text, fillPaint, maxWidth, isRtl)
 
             // Position: horizontally centered on box center, vertically centered in box height
             // Clamp BOTH horizontal and vertical to image bounds to prevent text cut-off
@@ -674,9 +766,10 @@ abstract class ManhuaRMTL :
         androidx.preference.ListPreference(screen.context).apply {
             key = PREF_CHAPTER_TEXT_MODE
             title = "Chapter text"
-            summary = "English (MTL overlay) burns translated text onto raw images. Raw shows original images only."
-            entries = arrayOf("English (MTL overlay)", "Raw images only")
-            entryValues = arrayOf("en", "raw")
+            summary = "English/Arabic (MTL overlay) burns translated text onto raw images. Arabic is machine-translated " +
+                "from the site's English text via free Google Translate. Raw shows original images only."
+            entries = arrayOf("English (MTL overlay)", "Arabic (MTL overlay, translated)", "Raw images only")
+            entryValues = arrayOf("en", "ar", "raw")
             setDefaultValue("en")
         }.let(screen::addPreference)
 
@@ -723,7 +816,7 @@ abstract class ManhuaRMTL :
         }.let(screen::addPreference)
     }
 
-    private fun android.content.SharedPreferences.prefersEnglish(): Boolean = getString(PREF_CHAPTER_TEXT_MODE, "en") == "en"
+    private fun android.content.SharedPreferences.chapterTextMode(): String = getString(PREF_CHAPTER_TEXT_MODE, "en") ?: "en"
     private fun android.content.SharedPreferences.hideNsfw(): Boolean = getBoolean(PREF_HIDE_NSFW, false)
     private fun android.content.SharedPreferences.showAltNames(): Boolean = getBoolean(PREF_SHOW_ALT_NAMES, true)
     private fun android.content.SharedPreferences.showExtraInfo(): Boolean = getBoolean(PREF_SHOW_EXTRA_INFO, true)
