@@ -1,10 +1,15 @@
-dependencies {
-    implementation(project(":core"))
+plugins {
+    alias(kei.plugins.extension)
 }
 
-ext {
-    set("id", "ar.manhuarmtl")
-    set("version", "1.0.0")
-    set("name", "ManhuaRMTL (Arabic Translation)")
-    set("baseUrl", "https://manhuarmtl.com")
+keiyoushi {
+    name = "ManhuaRMTL"
+    versionCode = 2
+    theme = "madara"
+    isNsfw = false
+
+    source {
+        lang = "ar"
+        baseUrl = "https://manhuarmtl.com"
+    }
 }
