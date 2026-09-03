@@ -6,10 +6,12 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 
 @Source
-class ManhuaRMTL :
-    Madara(
+class ManhuaRMTL(
+    override val lang: String = "ar",
+    override val id: Long = 0,
+) : Madara(
         "ManhuaRMTL",
         "https://manhuarmtl.com",
-        "ar",
+        lang,
         SimpleDateFormat("MM/dd/yyyy", Locale.US),
     )
