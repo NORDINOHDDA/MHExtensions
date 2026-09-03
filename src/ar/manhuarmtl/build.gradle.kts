@@ -5,6 +5,7 @@ plugins {
 keiyoushi {
     name = "ManhuaRMTL"
     versionCode = 2
+    libVersion = "1.4"
     theme = "madara"
 
     source {
