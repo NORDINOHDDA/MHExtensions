@@ -37,7 +37,7 @@ rootProject.name = "Keiyoushi"
 // To add more extensions later, either use loadIndividualExtension("lang", "name") for each,
 // or switch back to loadAllIndividualExtensions() to auto-discover everything under src/.
 loadIndividualExtension("all", "comixto")
-loadIndividualExtension("en", "manhuarmtl")
+loadIndividualExtensionIfExists("ar", "manhuarmtl")
 // loadAllIndividualExtensions()
 
 /**
@@ -64,6 +64,13 @@ fun loadAllIndividualExtensions() {
 }
 fun loadIndividualExtension(lang: String, name: String) {
     include("src:$lang:$name")
+}
+
+fun loadIndividualExtensionIfExists(lang: String, name: String) {
+    val path = File(rootDir, "src/$lang/$name")
+    if (path.exists() && path.isDirectory) {
+        include("src:$lang:$name")
+    }
 }
 
 fun File.eachDir(block: (File) -> Unit) {
